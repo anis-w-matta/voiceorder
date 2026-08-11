@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Voice Order Review</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#f5f6f8; --panel:#ffffff; --border:#e2e5ea; --text:#1a1d23; --muted:#6b7280;
+    --accent:#2563eb; --accent-weak:#eaf0fe; --green:#15803d; --green-weak:#e8f7ee;
+    --red:#b91c1c; --red-weak:#fdecec; --amber:#92400e; --amber-weak:#fef3e0;
+    --row-hover:#f0f4ff; --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+       background:var(--bg);color:var(--text);height:100vh;overflow:hidden}
+  header{display:flex;align-items:center;gap:16px;padding:10px 16px;
+         background:var(--panel);border-bottom:1px solid var(--border)}
+  header h1{font-size:15px;font-weight:600;margin:0;flex:0 0 auto}
+  header .spacer{flex:1}
+  header label{font-size:12px;color:var(--muted);margin-right:6px}
+  header input[type=text]{border:1px solid var(--border);border-radius:6px;padding:6px 8px;
+         font-size:13px;width:140px}
+  .conn-dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;flex:0 0 auto}
+  .conn-dot.ok{background:var(--green)}
+  .conn-dot.bad{background:var(--red)}
+
+  .layout{display:grid;grid-template-columns:380px 1fr;height:calc(100vh - 49px)}
+  .queue-pane{border-right:1px solid var(--border);display:flex;flex-direction:column;
+              background:var(--panel);overflow:hidden}
+  .queue-filters{display:flex;gap:6px;padding:10px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+  .queue-filters select{font-size:12px;padding:5px 6px;border:1px solid var(--border);
+              border-radius:6px;background:var(--panel)}
+  .queue-list{overflow-y:auto;flex:1}
+  .qrow{padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer}
+  .qrow:hover{background:var(--row-hover)}
+  .qrow.active{background:var(--accent-weak)}
+  .qrow-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .qrow-name{font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .qrow-time{font-size:11px;color:var(--muted);flex:0 0 auto}
+  .qrow-mid{font-size:12px;color:var(--muted);margin-top:2px}
+  .qrow-flags{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
+  .empty{padding:30px 16px;color:var(--muted);font-size:13px;text-align:center}
+
+  .badge{display:inline-block;font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:99px;
+         line-height:1.5;white-space:nowrap}
+  .badge.status-new{background:var(--accent-weak);color:var(--accent)}
+  .badge.status-in_review{background:var(--amber-weak);color:var(--amber)}
+  .badge.status-callback{background:var(--amber-weak);color:var(--amber)}
+  .badge.status-rejected{background:var(--red-weak);color:var(--red)}
+  .badge.status-committed{background:var(--green-weak);color:var(--green)}
+  .badge.flag-bad{background:var(--red-weak);color:var(--red)}
+  .badge.flag-warn{background:var(--amber-weak);color:var(--amber)}
+  .badge.flag-info{background:#eef2f7;color:var(--muted)}
+  .badge.lang{background:#eef2f7;color:var(--muted);font-family:var(--mono)}
+
+  .detail-pane{overflow-y:auto;padding:20px 26px 60px}
+  .hint{color:var(--muted);font-size:13px;padding:40px;text-align:center}
+  .dcard{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+         padding:16px 18px;margin-bottom:16px}
+  .dcard h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);
+            margin:0 0 10px}
+  .dhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+  .dhead .cust{font-size:17px;font-weight:700}
+  .dhead .sub{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .flagrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .claim-banner{margin-top:10px;font-size:12.5px;padding:8px 10px;border-radius:6px;
+                background:var(--amber-weak);color:var(--amber)}
+
+  .transcript{font-size:14px;line-height:1.6;white-space:pre-wrap;background:#fafbfc;
+              border:1px solid var(--border);border-radius:8px;padding:12px}
+  audio{width:100%;margin-top:10px}
+  .segments{margin-top:10px;max-height:160px;overflow-y:auto;font-size:12.5px}
+  .seg{display:flex;gap:8px;padding:4px 6px;border-radius:5px;cursor:pointer}
+  .seg:hover{background:var(--row-hover)}
+  .seg .t{font-family:var(--mono);color:var(--muted);flex:0 0 auto}
+
+  table.lines{width:100%;border-collapse:collapse;font-size:13px}
+  table.lines th{text-align:left;font-size:11px;text-transform:uppercase;color:var(--muted);
+                 padding:4px 6px;border-bottom:1px solid var(--border)}
+  table.lines td{padding:6px;vertical-align:top;border-bottom:1px solid var(--border)}
+  table.lines tr.removed{opacity:.4}
+  table.lines .raw{color:var(--muted);font-size:11.5px;margin-top:2px}
+  table.lines input[type=text],table.lines input[type=number],table.lines select{
+     width:100%;border:1px solid var(--border);border-radius:5px;padding:4px 6px;font-size:12.5px}
+  table.lines input.qty{width:70px}
+  .conf{font-size:11px;color:var(--muted);font-family:var(--mono)}
+  .add-line{margin-top:8px}
+
+  .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px}
+  button{cursor:pointer;font-size:13px;border-radius:7px;border:1px solid var(--border);
+         background:var(--panel);padding:7px 14px;font-weight:600;color:var(--text)}
+  button:hover{border-color:#c7cdd6}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#1d4ed8}
+  button.danger{color:var(--red)}
+  button.ghost{border-color:transparent;background:transparent;color:var(--muted);padding:4px 8px}
+  input.otype{width:80px;text-transform:uppercase}
+  textarea.note{width:100%;min-height:50px;border:1px solid var(--border);border-radius:6px;
+         padding:6px 8px;font-size:12.5px;font-family:inherit;resize:vertical}
+
+  .toast-wrap{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:8px;z-index:50}
+  .toast{padding:10px 14px;border-radius:8px;font-size:13px;color:#fff;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+  .toast.ok{background:var(--green)}
+  .toast.err{background:var(--red)}
+
+  .tabs{display:flex;gap:4px}
+  .tab-btn{border:none;background:transparent;font-size:13px;font-weight:600;color:var(--muted);
+           padding:6px 10px;border-radius:6px;cursor:pointer}
+  .tab-btn:hover{background:var(--row-hover)}
+  .tab-btn.active{background:var(--accent-weak);color:var(--accent)}
+  .activity-layout{display:block;overflow-y:auto;padding:10px}
+  .badge.level-info{background:#eef2f7;color:var(--muted)}
+  .badge.level-warn{background:var(--amber-weak);color:var(--amber)}
+  .badge.level-error{background:var(--red-weak);color:var(--red)}
+  #activityTable td{font-size:12.5px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🗣️ Voice Order Review</h1>
+  <div class="conn-dot" id="connDot" title="API connection"></div>
+  <div class="tabs">
+    <button class="tab-btn active" id="queueTabBtn">Queue</button>
+    <button class="tab-btn" id="activityTabBtn">Activity Log</button>
+  </div>
+  <div class="spacer"></div>
+  <label for="opInput">Operator</label>
+  <input id="opInput" type="text" placeholder="your name">
+</header>
+
+<div class="layout" id="queueView">
+  <div class="queue-pane">
+    <div class="queue-filters">
+      <select id="statusFilter">
+        <option value="">All statuses</option>
+        <option value="new">New</option>
+        <option value="in_review">In review</option>
+        <option value="callback">Callback</option>
+        <option value="rejected">Rejected</option>
+        <option value="committed">Committed</option>
+      </select>
+      <select id="flagFilter">
+        <option value="">All flags</option>
+        <option value="arabic_speech">arabic_speech</option>
+        <option value="mixed_language">mixed_language</option>
+        <option value="unresolved_items">unresolved_items</option>
+        <option value="missing_qty">missing_qty</option>
+        <option value="low_transcript_confidence">low_transcript_confidence</option>
+        <option value="multi_intent">multi_intent</option>
+        <option value="cancellation">cancellation</option>
+        <option value="no_lines_extracted">no_lines_extracted</option>
+        <option value="unknown_caller">unknown_caller</option>
+      </select>
+      <button class="ghost" id="refreshBtn" title="Refresh now">⟳</button>
+    </div>
+    <div class="queue-list" id="queueList"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="detail-pane" id="detailPane">
+    <div class="hint">Select a request on the left to review it.</div>
+  </div>
+</div>
+
+<div class="layout activity-layout" id="activityView" style="display:none">
+  <div class="detail-pane" style="grid-column:1/-1">
+    <div class="dcard">
+      <h2>Activity Log</h2>
+      <div class="queue-filters" style="padding:0 0 12px;border:none">
+        <select id="activityEventFilter">
+          <option value="">All event types</option>
+          <option value="voice_received">voice_received</option>
+          <option value="item_classified">item_classified</option>
+          <option value="reorder_resolved">reorder_resolved</option>
+          <option value="bill_validation">bill_validation</option>
+          <option value="email_sent">email_sent</option>
+          <option value="order_committed">order_committed</option>
+          <option value="update_rejected">update_rejected</option>
+          <option value="blocked_injection_attempt">blocked_injection_attempt</option>
+          <option value="error">error</option>
+        </select>
+        <select id="activityLevelFilter">
+          <option value="">All levels</option>
+          <option value="info">info</option>
+          <option value="warn">warn</option>
+          <option value="error">error</option>
+        </select>
+        <button class="ghost" id="activityRefreshBtn" title="Refresh now">⟳</button>
+      </div>
+      <table class="lines" id="activityTable">
+        <thead><tr><th>Time</th><th>Level</th><th>Event</th><th>Message</th><th>Cust / Order</th></tr></thead>
+        <tbody id="activityBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script>
+const API = "";
+let currentId = null;
+let currentDetail = null;
+let removedLines = new Set();
+
+const FLAG_LEVEL = {
+  low_transcript_confidence: "bad", unresolved_items: "bad", cancellation: "bad",
+  very_short_audio: "warn", long_audio: "warn", unexpected_language: "warn",
+  unknown_caller: "warn", missing_qty: "warn", no_lines_extracted: "warn",
+  no_open_orders: "warn", multiple_open_orders: "warn",
+  arabic_speech: "info", mixed_language: "info", multi_intent: "info",
+};
+
+function opName(){ return localStorage.getItem("vo_operator") || ""; }
+document.getElementById("opInput").value = opName();
+document.getElementById("opInput").addEventListener("input", e=>{
+  localStorage.setItem("vo_operator", e.target.value);
+});
+
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind || "ok");
+  el.textContent = msg;
+  document.getElementById("toastWrap").appendChild(el);
+  setTimeout(()=>el.remove(), 4500);
+}
+
+async function api(path, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({"X-Operator": opName() || "unknown"}, opts.headers || {});
+  const res = await fetch(API + path, opts);
+  document.getElementById("connDot").className = "conn-dot ok";
+  let body = null;
+  try { body = await res.json(); } catch(e) {}
+  if (!res.ok) {
+    const detail = (body && body.detail) ? body.detail : res.statusText;
+    const err = new Error(detail);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+function timeAgo(iso){
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime())/1000);
+  if (s < 60) return Math.floor(s)+"s ago";
+  if (s < 3600) return Math.floor(s/60)+"m ago";
+  if (s < 86400) return Math.floor(s/3600)+"h ago";
+  return Math.floor(s/86400)+"d ago";
+}
+
+function flagBadge(f){
+  const lvl = FLAG_LEVEL[f] || "info";
+  return `<span class="badge flag-${lvl}">${f}</span>`;
+}
+
+async function loadQueue(){
+  const status = document.getElementById("statusFilter").value;
+  const flag = document.getElementById("flagFilter").value;
+  let path = "/queue?limit=100";
+  if (status) path += "&status=" + encodeURIComponent(status);
+  if (flag) path += "&flag=" + encodeURIComponent(flag);
+  let rows;
+  try {
+    rows = await api(path);
+  } catch (e) {
+    document.getElementById("connDot").className = "conn-dot bad";
+    document.getElementById("queueList").innerHTML =
+      `<div class="empty">Can't reach the API.<br>${e.message}</div>`;
+    return;
+  }
+  const list = document.getElementById("queueList");
+  if (!rows.length) { list.innerHTML = '<div class="empty">Queue is empty.</div>'; return; }
+  list.innerHTML = rows.map(r => `
+    <div class="qrow ${r.id===currentId?'active':''}" data-id="${r.id}">
+      <div class="qrow-top">
+        <span class="qrow-name">${r.customer_name || r.phone_e164 || "Unknown caller"}</span>
+        <span class="qrow-time">${timeAgo(r.created_at)}</span>
+      </div>
+      <div class="qrow-mid">
+        ${r.primary_intent} · ${r.line_count} line${r.line_count===1?'':'s'}
+        · <span class="badge status-${r.status}">${r.status}</span>
+        ${(r.languages||[]).map(l=>`<span class="badge lang">${l}</span>`).join(" ")}
+      </div>
+      <div class="qrow-flags">${(r.flags||[]).map(flagBadge).join("")}</div>
+    </div>`).join("");
+  list.querySelectorAll(".qrow").forEach(el=>{
+    el.addEventListener("click", ()=> openRequest(parseInt(el.dataset.id)));
+  });
+}
+
+async function openRequest(id){
+  currentId = id;
+  removedLines = new Set();
+  document.querySelectorAll(".qrow").forEach(el=>{
+    el.classList.toggle("active", parseInt(el.dataset.id)===id);
+  });
+  document.getElementById("detailPane").innerHTML = '<div class="hint">Loading…</div>';
+  try {
+    currentDetail = await api(`/queue/${id}`);
+  } catch(e) {
+    document.getElementById("detailPane").innerHTML = `<div class="hint">${e.message}</div>`;
+    return;
+  }
+  renderDetail();
+}
+
+function renderDetail(){
+  const d = currentDetail;
+  const decided = ["committed","rejected"].includes(d.status);
+  const otherClaim = d.assigned_to && d.assigned_to !== opName();
+
+  const flagsHtml = (d.flags||[]).map(flagBadge).join(" ") || '<span class="badge flag-info">none</span>';
+
+  const linesHtml = d.lines.map(l => {
+    const removed = removedLines.has(l.line_nb);
+    const candOpts = (l.candidates||[]).map(c =>
+      `<option value="${c.item_nb}" data-desc="${escapeAttr(c.item_desc)}"
+        ${c.item_nb===l.item_nb?"selected":""}>${c.item_nb} — ${c.item_desc} (${c.score.toFixed(2)})</option>`
+    ).join("");
+    return `
+      <tr class="${removed?'removed':''}" data-line="${l.line_nb}">
+        <td>${l.line_nb}<div class="raw">"${escapeHtml(l.raw_text)}"${l.raw_lang?` · ${l.raw_lang}`:''}</div></td>
+        <td>
+          <select class="cand-select">
+            <option value="">— manual —</option>
+            ${candOpts}
+          </select>
+          <input type="text" class="item-nb" placeholder="item #" value="${l.item_nb||''}">
+          <div class="conf">${l.match_method||'unmatched'}${l.match_confidence!=null?' · '+l.match_confidence.toFixed(2):''}</div>
+        </td>
+        <td><input type="text" class="item-desc" placeholder="description" value="${escapeAttr(l.item_desc||'')}"></td>
+        <td><input type="number" step="0.001" class="qty" value="${l.qty!=null?l.qty:''}"></td>
+        <td><input type="text" class="uom" style="width:70px" value="${l.uom||''}"></td>
+        <td><span class="badge ${l.category==='unable to classify'?'flag-warn':'flag-info'}">${escapeHtml(l.category||'—')}</span></td>
+        <td><button class="ghost remove-line" title="${removed?'Restore line':'Remove line'}">${removed?'↺':'✕'}</button></td>
+      </tr>`;
+  }).join("");
+
+  document.getElementById("detailPane").innerHTML = `
+    <div class="dcard">
+      <div class="dhead">
+        <div>
+          <div class="cust">${d.customer_name || d.phone_e164 || "Unknown caller"}</div>
+          <div class="sub">${d.cust_nb ? d.cust_nb+" · " : ""}${d.phone_e164 || "no phone"}
+            · ${d.duration_sec ? d.duration_sec+"s" : ""}
+            · conf ${d.transcript_conf!=null?d.transcript_conf.toFixed(2):"?"}
+            ${d.target_order_nb ? " · target order "+d.target_order_nb : ""}</div>
+        </div>
+        <span class="badge status-${d.status}">${d.status}</span>
+      </div>
+      <div class="flagrow">
+        <span class="badge status-new" style="background:#eef2f7;color:var(--text)">${d.intents.join(", ")}</span>
+        ${flagsHtml}
+      </div>
+      ${otherClaim ? `<div class="claim-banner">Claimed by ${d.assigned_to}</div>` : ""}
+    </div>
+
+    <div class="dcard">
+      <h2>Transcript</h2>
+      <div class="transcript">${escapeHtml(d.transcript || "(no transcript)")}</div>
+      <audio id="player" controls src="${d.audio_url}"></audio>
+      <div class="segments">
+        ${(d.segments||[]).map(s => `
+          <div class="seg" data-start="${s.start}">
+            <span class="t">${fmtT(s.start)}–${fmtT(s.end)}</span><span>${escapeHtml(s.text)}</span>
+          </div>`).join("") || '<div class="raw">no segment timing</div>'}
+      </div>
+    </div>
+
+    <div class="dcard">
+      <h2>Lines</h2>
+      <table class="lines">
+        <thead><tr><th>#</th><th>Item</th><th>Description</th><th>Qty</th><th>UoM</th><th>Category</th><th></th></tr></thead>
+        <tbody id="linesBody">${linesHtml}</tbody>
+      </table>
+      <div id="noLinesHint" class="raw" style="padding:6px 0;${d.lines.length?'display:none':''}">
+        No lines extracted${d.language==='ar'||d.languages&&d.languages.includes('ar')?' — common with Arabic speech, add lines manually below':''}.
+      </div>
+      <div class="actions add-line">
+        <button class="ghost" id="addLineBtn" style="border:1px dashed var(--border)" ${decided?"disabled":""}>+ Add line</button>
+        <label style="font-size:12px;color:var(--muted)">Order type
+          <input type="text" class="otype" id="orderType" value="SO"></label>
+        <button id="acceptBtn" class="primary" ${decided?"disabled":""}>Accept &amp; commit</button>
+      </div>
+    </div>
+
+    <div class="dcard">
+      <h2>Decision</h2>
+      <textarea class="note" id="noteInput" placeholder="Note (optional for callback, required-ish for reject)"></textarea>
+      <div class="actions" style="margin-top:8px">
+        ${!d.assigned_to || d.assigned_to===opName() ?
+          (d.status==="new" ? '<button id="claimBtn">Claim</button>' : '') : ''}
+        <select id="rejectReason">
+          <option value="wrong_number">wrong number</option>
+          <option value="duplicate">duplicate</option>
+          <option value="spam">spam</option>
+          <option value="other">other</option>
+        </select>
+        <button id="rejectBtn" class="danger" ${decided?"disabled":""}>Reject</button>
+        <button id="callbackBtn" ${decided?"disabled":""}>Needs callback</button>
+      </div>
+    </div>
+  `;
+
+  const player = document.getElementById("player");
+  document.querySelectorAll(".seg").forEach(el=>{
+    el.addEventListener("click", ()=>{
+      player.currentTime = parseFloat(el.dataset.start);
+      player.play();
+    });
+  });
+  document.querySelectorAll(".cand-select").forEach(sel=>{
+    sel.addEventListener("change", ()=>{
+      const tr = sel.closest("tr");
+      const opt = sel.selectedOptions[0];
+      if (opt.value){
+        tr.querySelector(".item-nb").value = opt.value;
+        tr.querySelector(".item-desc").value = opt.dataset.desc || "";
+      }
+    });
+  });
+  wireRemoveButtons();
+
+  const claimBtn = document.getElementById("claimBtn");
+  if (claimBtn) claimBtn.addEventListener("click", doClaim);
+  document.getElementById("acceptBtn").addEventListener("click", doAccept);
+  document.getElementById("rejectBtn").addEventListener("click", doReject);
+  document.getElementById("callbackBtn").addEventListener("click", doCallback);
+  document.getElementById("addLineBtn").addEventListener("click", addManualLine);
+}
+
+function wireRemoveButtons(){
+  document.querySelectorAll(".remove-line").forEach(btn=>{
+    // avoid double-binding if called again after adding a manual row
+    if (btn.dataset.wired) return;
+    btn.dataset.wired = "1";
+    btn.addEventListener("click", ()=>{
+      const tr = btn.closest("tr");
+      if (tr.dataset.manual){
+        tr.remove();
+        if (!document.querySelectorAll("#linesBody tr[data-line]").length)
+          document.getElementById("noLinesHint").style.display = "";
+        return;
+      }
+      const nb = parseInt(tr.dataset.line);
+      if (removedLines.has(nb)) removedLines.delete(nb); else removedLines.add(nb);
+      tr.classList.toggle("removed");
+      btn.textContent = removedLines.has(nb) ? "↺" : "✕";
+    });
+  });
+}
+
+function addManualLine(){
+  const body = document.getElementById("linesBody");
+  const existing = [...body.querySelectorAll("tr[data-line]")]
+    .map(tr => parseInt(tr.dataset.line));
+  const nb = (existing.length ? Math.max(...existing) : 0) + 1;
+  body.insertAdjacentHTML("beforeend", `
+    <tr data-line="${nb}" data-manual="1">
+      <td>${nb}<div class="raw">manually added</div></td>
+      <td><input type="text" class="item-nb" placeholder="item #"></td>
+      <td><input type="text" class="item-desc" placeholder="description"></td>
+      <td><input type="number" step="0.001" class="qty"></td>
+      <td><input type="text" class="uom" style="width:70px"></td>
+      <td><span class="badge flag-info">manual</span></td>
+      <td><button class="ghost remove-line" title="Remove line">✕</button></td>
+    </tr>`);
+  document.getElementById("noLinesHint").style.display = "none";
+  wireRemoveButtons();
+  body.querySelector(`tr[data-line="${nb}"] .item-nb`).focus();
+}
+
+function fmtT(s){ s = Math.round(s); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
+function escapeHtml(s){ return (s||"").replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function escapeAttr(s){ return escapeHtml(s).replace(/"/g,"&quot;"); }
+
+async function doClaim(){
+  if (!opName()) { toast("Enter your operator name first", "err"); return; }
+  try {
+    await api(`/queue/${currentId}/claim`, {method:"POST"});
+    toast("Claimed");
+    await openRequest(currentId);
+    await loadQueue();
+  } catch(e){ toast(e.message, "err"); }
+}
+
+async function doAccept(){
+  if (!opName()) { toast("Enter your operator name first", "err"); return; }
+  const rows = document.querySelectorAll("table.lines tbody tr[data-line]");
+  const lines = [];
+  rows.forEach(tr=>{
+    const nb = parseInt(tr.dataset.line);
+    if (removedLines.has(nb)) return;
+    const itemNb = tr.querySelector(".item-nb").value.trim();
+    const itemDesc = tr.querySelector(".item-desc").value.trim();
+    const qty = tr.querySelector(".qty").value;
+    const uom = tr.querySelector(".uom").value.trim();
+    lines.push({
+      line_nb: nb,
+      item_nb: itemNb || null,
+      item_desc: itemDesc || null,
+      qty: qty === "" ? null : qty,
+      uom: uom || null,
+    });
+  });
+  const orderType = document.getElementById("orderType").value.trim() || "SO";
+  try {
+    const res = await api(`/requests/${currentId}/accept`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      // Removals must be stated explicitly - the API no longer treats a
+      // line missing from `lines` as a deletion.
+      body: JSON.stringify({order_type: orderType, lines,
+                            removed_line_nbs: [...removedLines]}),
+    });
+    toast(`Committed as order ${res.order_nb}`);
+    await openRequest(currentId);
+    await loadQueue();
+  } catch(e){ toast(e.message, "err"); }
+}
+
+async function doReject(){
+  if (!opName()) { toast("Enter your operator name first", "err"); return; }
+  const reason = document.getElementById("rejectReason").value;
+  const note = document.getElementById("noteInput").value;
+  try {
+    await api(`/requests/${currentId}/reject`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({reason, note}),
+    });
+    toast("Rejected");
+    await openRequest(currentId);
+    await loadQueue();
+  } catch(e){ toast(e.message, "err"); }
+}
+
+async function doCallback(){
+  if (!opName()) { toast("Enter your operator name first", "err"); return; }
+  const note = document.getElementById("noteInput").value;
+  try {
+    await api(`/requests/${currentId}/callback`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({note}),
+    });
+    toast("Marked for callback");
+    await openRequest(currentId);
+    await loadQueue();
+  } catch(e){ toast(e.message, "err"); }
+}
+
+document.getElementById("statusFilter").addEventListener("change", loadQueue);
+document.getElementById("flagFilter").addEventListener("change", loadQueue);
+document.getElementById("refreshBtn").addEventListener("click", loadQueue);
+
+// ---- Activity log tab -------------------------------------------------
+
+let activityTimer = null;
+
+function levelBadge(lvl){ return `<span class="badge level-${lvl}">${lvl}</span>`; }
+
+async function loadActivity(){
+  const event_type = document.getElementById("activityEventFilter").value;
+  const level = document.getElementById("activityLevelFilter").value;
+  let path = "/activity?limit=200";
+  if (event_type) path += "&event_type=" + encodeURIComponent(event_type);
+  if (level) path += "&level=" + encodeURIComponent(level);
+  const body = document.getElementById("activityBody");
+  let rows;
+  try {
+    rows = await api(path);
+  } catch(e) {
+    body.innerHTML = `<tr><td colspan="5">Can't reach the API.<br>${e.message}</td></tr>`;
+    return;
+  }
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="5">No activity yet.</td></tr>'; return; }
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td>${new Date(r.ts).toLocaleString()}</td>
+      <td>${levelBadge(r.level)}</td>
+      <td>${r.event_type}</td>
+      <td>${escapeHtml(r.message)}</td>
+      <td>${[r.cust_nb, r.order_nb].filter(Boolean).join(" / ") || "—"}</td>
+    </tr>`).join("");
+}
+
+function showView(view){
+  const isActivity = view === "activity";
+  document.getElementById("queueView").style.display = isActivity ? "none" : "grid";
+  document.getElementById("activityView").style.display = isActivity ? "block" : "none";
+  document.getElementById("queueTabBtn").classList.toggle("active", !isActivity);
+  document.getElementById("activityTabBtn").classList.toggle("active", isActivity);
+  clearInterval(activityTimer);
+  if (isActivity) {
+    loadActivity();
+    activityTimer = setInterval(loadActivity, 10000);
+  }
+}
+
+document.getElementById("queueTabBtn").addEventListener("click", ()=>showView("queue"));
+document.getElementById("activityTabBtn").addEventListener("click", ()=>showView("activity"));
+document.getElementById("activityEventFilter").addEventListener("change", loadActivity);
+document.getElementById("activityLevelFilter").addEventListener("change", loadActivity);
+document.getElementById("activityRefreshBtn").addEventListener("click", loadActivity);
+
+loadQueue();
+setInterval(loadQueue, 10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.wav
+*.m4a
+*.log
+.pytest_cache/
+# Voice recordings - real customer audio, never belongs in version control.
+audio/
+# Third-party binary, not source - reinstall separately when deploying.
+nssm.exe
