@@ -10,6 +10,16 @@ class TranscriptSegment(BaseModel):
 
 class Transcript(BaseModel):
     text: str
+    # Derived via normalization.normalize_text(text) for downstream
+    # comparisons only - text itself always stays exactly what Gemini
+    # returned (see the transcription prompt's "faithful representation"
+    # requirement).
+    normalized_transcript: str = ""
+    quality: str = "good"
+    disagreement: bool = False
+    # Audit trail of every transcription attempt made (text/confidence/
+    # quality/temperature) - at most max_transcription_attempts entries.
+    attempts: list[dict] = []
     language: str
     languages: list[str] = []
     duration: float

@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 
 from fastapi import Depends
 
-from app.api import activity, bills, ingest, queue, review
+from app.api import activity, auth, ingest, queue, review
 from app.api.deps import require_api_key
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -25,8 +25,8 @@ _guard = [Depends(require_api_key)]
 app.include_router(ingest.router, dependencies=_guard)
 app.include_router(queue.router, dependencies=_guard)
 app.include_router(review.router, dependencies=_guard)
-app.include_router(bills.router, dependencies=_guard)
 app.include_router(activity.router, dependencies=_guard)
+app.include_router(auth.router, dependencies=_guard)
 
 
 @app.get("/health")
@@ -37,3 +37,8 @@ def health():
 @app.get("/console")
 def console():
     return FileResponse(STATIC_DIR / "console.html")
+
+
+@app.get("/record")
+def record():
+    return FileResponse(STATIC_DIR / "record.html")

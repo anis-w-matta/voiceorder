@@ -29,6 +29,7 @@ class CandidateOut(BaseModel):
     # Without this the reviewer sees a score but not how it was reached, so
     # a loose substring guess is indistinguishable from an exact code match.
     method: str | None = None
+    attribute_conflict: bool = False
 
 
 class LineOut(BaseModel):
@@ -42,8 +43,13 @@ class LineOut(BaseModel):
     uom: str | None
     match_confidence: float | None
     match_method: str | None
+    change: str | None = None
     category: str | None
     candidates: list[CandidateOut] = []
+    line_flags: list[str] = []
+    resolution_meta: dict = {}
+    attributes: dict = {}
+    qualifiers: dict = {}
 
 
 class RequestDetail(BaseModel):

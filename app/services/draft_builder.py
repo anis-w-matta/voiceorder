@@ -1,192 +1,260 @@
-from decimal import Decimal
-
 from sqlalchemy import select
 
-from app.models import Item, Lead, PendingLine, PendingRequest
+from app.models import Item, PendingLine, PendingRequest
 from app.schemas.enums import Intent, MatchMethod
 from app.services.activity_log import log as log_activity
 from app.services.item_classifier import classify_line
-
-PRIORITY = [Intent.cancel_order, Intent.update_order,
-            Intent.repeat_order_adjusted, Intent.repeat_order,
-            Intent.add_order, Intent.get_invoice, Intent.get_bill,
-            Intent.catalogue_request, Intent.other]
-
-TARGET_INTENTS = {Intent.cancel_order, Intent.update_order,
-                  Intent.repeat_order, Intent.repeat_order_adjusted}
-
-
-def primary_of(intents) -> str:
-    for i in PRIORITY:
-        if i in intents:
-            return i.value
-    return Intent.other.value
+from app.services.scripted.models import MatchStatus, ScriptedOrderResult
 
 
 class DraftBuilder:
-    def __init__(self, session, resolver, prior, flagger, catalogue):
+    """Turns a resolved scripted command (place_order/return_order/reorder,
+    app/services/scripted/resolve_order.py) into a PendingRequest for
+    manual review. `catalogue` supplies the known-category list
+    classify_line() checks candidate categories against; `prior` supplies
+    prior-order lookups for return_order (full return) and reorder.
+    """
+
+    def __init__(self, session, prior, catalogue):
         self.s = session
-        self.resolver = resolver
         self.prior = prior
-        self.flagger = flagger
         self.catalogue = catalogue
 
-    def build(self, voice, transcript, extraction, customer):
-        intents = extraction.intents or [Intent.other]
-        cust_nb = customer.customer_number if customer else None
+    def _lines_from_prior_lines(self, prior_lines, raw_text_fn):
+        """PendingLine rows built from a list of prior OrderDetail rows -
+        shared by _from_prior (reorder) and build_return's full-return
+        branch, which used to duplicate this exact lookup+construction and
+        had drifted apart: one path ran the result through classify_line's
+        tier-2/3 fallback and the other left category=None outright for an
+        item that's since left the catalogue, instead of the "unable to
+        classify" tier-3 fallback every other PendingLine in the app gets.
+        `raw_text_fn(order_detail)` supplies the label distinguishing the
+        two callers ("[from order ...]" vs "[return of order ...]").
 
-        target, ambiguity = None, None
-        reorder = {Intent.repeat_order, Intent.repeat_order_adjusted} & set(intents)
-        if cust_nb and (set(intents) & TARGET_INTENTS):
-            target, ambiguity = self.prior.resolve_target(
-                cust_nb, extraction.order_reference)
-            if reorder:
-                log_activity(
-                    self.s, "reorder_resolved",
-                    f"reorder for {cust_nb} resolved to order "
-                    f"{target.order_nb}" if target else
-                    f"reorder for {cust_nb} could not resolve a target "
-                    f"order ({ambiguity})",
-                    level="info" if target else "warn", cust_nb=cust_nb,
-                    voice_message_id=voice.id,
-                    details={"ambiguity": ambiguity} if ambiguity else {})
-
-        lines = []
-        if {Intent.repeat_order, Intent.repeat_order_adjusted} & set(intents):
-            lines = self._from_prior(target)
-        if {Intent.add_order, Intent.repeat_order_adjusted} & set(intents):
-            lines += self._from_extraction(extraction, cust_nb,
-                                           start=len(lines) + 1)
-
-        flags = self.flagger.compute(transcript=transcript,
-                                     extraction=extraction, lines=lines,
-                                     customer=customer, ambiguity=ambiguity)
-
-        req = PendingRequest(
-            voice_message_id=voice.id, cust_nb=cust_nb,
-            intents=[i.value for i in intents],
-            primary_intent=primary_of(intents),
-            target_order_nb=target.order_nb if target else None,
-            target_order_type=target.order_type if target else None,
-            raw_model_output=extraction.model_dump(mode="json"),
-            flags=flags, status="new")
-        req.lines = lines
-        self.s.add(req)
-        self.s.flush()
-        if lines:
-            log_activity(self.s, "item_classified",
-                        f"classified {len(lines)} line(s) for request {req.id}",
-                        request_id=req.id, cust_nb=cust_nb,
-                        details={"lines": [{"line_nb": l.line_nb,
-                                           "category": l.category}
-                                          for l in lines]})
-        return req
-
-    def _from_prior(self, target):
-        if not target:
+        Looks up each item's *current* category rather than trusting the
+        historical order_details snapshot, which may predate this column
+        (NULL) or be stale relative to a catalogue re-categorisation.
+        """
+        if not prior_lines:
             return []
-        prior_lines = self.prior.lines_of(target)
-        # Look up each item's *current* category rather than trusting the
-        # historical order_details snapshot, which may predate this column
-        # (NULL) or be stale relative to a catalogue re-categorisation.
         items = {i.item_number: i for i in self.s.scalars(select(Item).where(
-            Item.item_number.in_({d.item_nb for d in prior_lines})))} \
-            if prior_lines else {}
+            Item.item_number.in_({d.item_nb for d in prior_lines})))}
         return [PendingLine(
-            line_nb=i, raw_text=f"[from order {target.order_nb}]",
+            line_nb=n, raw_text=raw_text_fn(d),
             item_nb=d.item_nb, item_desc=d.item_desc, qty=d.qty, uom=d.uom,
             match_confidence=1.0, match_method=MatchMethod.prior_order.value,
             category=classify_line(
                 matched_category=items[d.item_nb].category
                 if d.item_nb in items else None,
                 raw_text=d.item_desc, known_categories=[]))
-            for i, d in enumerate(prior_lines, start=1)]
+            for n, d in enumerate(prior_lines, start=1)]
 
-    def _from_extraction(self, extraction, cust_nb, start=1):
-        out = []
-        n = start
+    def _from_prior(self, target):
+        if not target:
+            return []
+        prior_lines = self.prior.lines_of(target)
+        return self._lines_from_prior_lines(
+            prior_lines, lambda d: f"[from order {target.order_nb}]")
+
+    def _pending_lines_from_scripted(self, scripted: ScriptedOrderResult
+                                     ) -> list[PendingLine]:
+        """PendingLine rows for a scripted result's resolved item lines -
+        shared by build_scripted_order (place_order) and build_return's
+        partial-return branch."""
         known_categories = self.catalogue.all_categories()
-        for el in extraction.lines:
-            # Each fallback attempt used to overwrite `cands` outright, so
-            # a decent sub-threshold suggestion from an earlier attempt
-            # (e.g. an alias fuzzy-matched at 0.6-0.8) vanished the moment
-            # a later attempt ran, even when that later attempt found
-            # nothing at all. Pool everything every attempt turns up and
-            # only keep the best score per item, so the reviewer always
-            # sees every candidate any method considered.
-            pool: dict[str, object] = {}
+        lines = []
+        for n, rl in enumerate(scripted.lines, start=1):
+            match, qty = rl.match, rl.qty
+            line_flags = []
+            if match.status == MatchStatus.AMBIGUOUS:
+                line_flags.append("ambiguous_catalogue_match")
+            elif match.status == MatchStatus.NOT_FOUND:
+                line_flags.append("unknown_alias")
+            if qty.status != "matched":
+                line_flags.append("quantity_parse_error")
+            lines.append(PendingLine(
+                line_nb=n, raw_text=rl.raw_item_text,
+                item_nb=match.item_number, item_desc=match.item_description,
+                qty=qty.quantity, uom=qty.uom,
+                match_confidence=(match.score / 100 if match.score is not None
+                                  else None),
+                match_method=match.method,
+                candidates=[{"item_nb": c.item_number,
+                            "item_desc": c.item_description,
+                            "category": c.item_family or "",
+                            "score": c.score,
+                            "method": match.method,
+                            "attribute_conflict": not c.numeric_compatible}
+                           for c in match.candidates[:5]],
+                line_flags=line_flags,
+                resolution_meta={"explanation": match.explanation,
+                                "qty_reason": qty.reason},
+                category=classify_line(matched_category=match.item_family,
+                                       raw_text=rl.raw_item_text,
+                                       known_categories=known_categories)))
+        return lines
 
-            def merge(cand_list):
-                for c in cand_list:
-                    if c.item_nb not in pool or c.score > pool[c.item_nb].score:
-                        pool[c.item_nb] = c
+    def _scope_return_lines_to_order(self, lines: list[PendingLine],
+                                     resolved, order_header) -> None:
+        """A partial return names items by ear, and catalogue-wide
+        resolution (aliases, pg_trgm, fuzzy) can confidently land on an
+        item the customer never actually bought on this order - which
+        would draft a return for the wrong item. This narrows every line
+        to what's actually on order_header: a top-1 catalogue match that
+        isn't one of this order's items is refused (not committed), and an
+        ambiguous/unmatched line is given a second look restricted to just
+        this order's candidates, where the same catalogue ambiguity often
+        collapses to one answer (see ItemMatchResult.candidates - already
+        scored by resolve_item, only the pool is narrowed here, nothing
+        is re-queried from the item table).
+        """
+        order_item_nbs = {d.item_nb for d in self.prior.lines_of(order_header)}
+        for line, rl in zip(lines, resolved):
+            if line.item_nb in order_item_nbs:
+                continue  # top-1 catalogue match is already on this order
+            in_order = sorted(
+                (c for c in rl.match.candidates if c.item_number in order_item_nbs),
+                key=lambda c: c.score, reverse=True)
+            if in_order:
+                best = in_order[0]
+                line.item_nb = best.item_number
+                line.item_desc = best.item_description
+                line.match_confidence = best.score / 100
+                line.match_method = "fuzzy"
+                line.line_flags = [f for f in line.line_flags if f not in
+                                   ("ambiguous_catalogue_match", "unknown_alias")]
+                line.category = best.item_family
+            else:
+                line.item_nb = None
+                line.match_confidence = None
+                if "item_not_in_order" not in line.line_flags:
+                    line.line_flags = line.line_flags + ["item_not_in_order"]
+            line.resolution_meta = {
+                **line.resolution_meta,
+                "order_scoped": order_header.order_nb,
+                "catalogue_top_match": rl.match.item_number,
+                "order_item_numbers": sorted(order_item_nbs)}
 
-            match = None
-            if el.product:
-                match, cands = self.resolver.resolve(el.product, cust_nb)
-                merge(cands)
-            if match is None and el.raw_text:
-                # retry on raw_text: Arabic often lands there when the
-                # model leaves `product` null
-                match, cands = self.resolver.resolve(el.raw_text, cust_nb)
-                merge(cands)
+    def build_scripted_order(self, voice, scripted: ScriptedOrderResult):
+        """place_order -> PendingRequest."""
+        cust_nb = (scripted.customer.customer_number
+                  if scripted.customer and
+                  scripted.customer.status == MatchStatus.MATCHED else None)
+        lines = self._pending_lines_from_scripted(scripted)
+        flags = list(scripted.errors)
+        if scripted.customer and scripted.customer.status != MatchStatus.MATCHED:
+            flags.append(f"customer_{scripted.customer.status.value}")
+        if not lines:
+            flags.append("no_lines")
 
-            found = []
-            if match is None and el.raw_text:
-                # last resort: known aliases/descriptions are a closed
-                # vocabulary, so look for them as literal (or close fuzzy)
-                # matches inside the sentence - catches cases resolve()'s
-                # trigram search misses because a short alias against a
-                # long sentence scores below its similarity threshold.
-                # Can surface more than one product when the extractor
-                # merged several into one line.
-                found = self.resolver.find_in_text(el.raw_text)
-                merge(found)
-                if found:
-                    match = found[0]
-
-            cands = sorted(pool.values(), key=lambda c: c.score,
-                           reverse=True)[:5]
-
-            qty = Decimal(str(el.qty)) if el.qty is not None else None
-            out.append(PendingLine(
-                line_nb=n, raw_text=el.raw_text, raw_lang=el.raw_lang,
-                item_nb=match.item_nb if match else None,
-                item_desc=match.item_desc if match else None,
-                qty=qty, uom=el.uom,
-                match_confidence=match.score if match else None,
-                match_method=match.method if match else None,
-                candidates=[c.dict() for c in cands],
-                category=classify_line(
-                    matched_category=match.category if match else None,
-                    raw_text=el.raw_text, known_categories=known_categories)))
-            n += 1
-
-            for extra in found[1:]:
-                # qty/uom deliberately left unset: the extractor gave one
-                # quantity for a line that turned out to name several
-                # products, and there is no way to tell which number belongs
-                # to which. A blank raises missing_qty for the reviewer,
-                # where copying the first line's quantity would look
-                # confident and be wrong.
-                out.append(PendingLine(
-                    line_nb=n, raw_text=el.raw_text, raw_lang=el.raw_lang,
-                    item_nb=extra.item_nb, item_desc=extra.item_desc,
-                    qty=None, uom=None,
-                    match_confidence=extra.score, match_method=extra.method,
-                    candidates=[extra.dict()],
-                    category=classify_line(
-                        matched_category=extra.category, raw_text=el.raw_text,
-                        known_categories=known_categories)))
-                n += 1
-        return out
-
-    def build_lead(self, voice, extraction):
-        products = [l.product or l.raw_text for l in extraction.lines]
-        cats = self.catalogue.categories_for(
-            products, extraction.categories_mentioned)
-        lead = Lead(voice_message_id=voice.id, phone_e164=voice.phone_e164,
-                    categories_sent=cats, products_mentioned=products)
-        self.s.add(lead)
+        req = PendingRequest(
+            voice_message_id=voice.id, cust_nb=cust_nb,
+            intents=[Intent.add_order.value],
+            primary_intent=Intent.add_order.value,
+            raw_model_output={"scripted": True, "command_type": "place_order"},
+            flags=flags,
+            classification_quality="good" if scripted.status == "success"
+            else "questionable",
+            status="new")
+        req.lines = lines
+        self.s.add(req)
         self.s.flush()
-        return lead
+        if lines:
+            log_activity(self.s, "item_classified",
+                        f"scripted place_order classified {len(lines)} "
+                        f"line(s) for request {req.id}",
+                        request_id=req.id, cust_nb=cust_nb)
+        return req
+
+    def build_return(self, voice, order_header, scripted: ScriptedOrderResult):
+        """return_order -> PendingRequest. A full return (no items spoken)
+        copies every line of the referenced order via PriorOrderService,
+        mirroring _from_prior's reorder behaviour; a partial return
+        resolves only the spoken items through the same scripted item/qty
+        pipeline as place_order. `order_header` is the resolved OrderHeader
+        for scripted.order_reference, or None if it couldn't be found - a
+        return can still be drafted for manual review in that case, just
+        with no cust_nb/target set.
+        """
+        cust_nb = order_header.cust_nb if order_header else None
+        if scripted.full_return:
+            prior_lines = self.prior.lines_of(order_header) if order_header else []
+            lines = self._lines_from_prior_lines(
+                prior_lines,
+                lambda d: f"[return of order {order_header.order_nb}]")
+        else:
+            lines = self._pending_lines_from_scripted(scripted)
+            if order_header:
+                self._scope_return_lines_to_order(lines, scripted.lines,
+                                                  order_header)
+
+        flags = []
+        if order_header is None:
+            flags.append("return_order_reference_not_found")
+        if not lines:
+            flags.append("no_lines")
+
+        req = PendingRequest(
+            voice_message_id=voice.id, cust_nb=cust_nb,
+            intents=[Intent.return_order.value],
+            primary_intent=Intent.return_order.value,
+            target_order_nb=order_header.order_nb if order_header else None,
+            target_order_type=order_header.order_type if order_header else None,
+            raw_model_output={"scripted": True, "command_type": "return_order",
+                              "order_reference": scripted.order_reference,
+                              "full_return": scripted.full_return},
+            flags=flags,
+            classification_quality="good" if scripted.status == "success"
+            else "questionable",
+            status="new")
+        req.lines = lines
+        self.s.add(req)
+        self.s.flush()
+        log_activity(self.s, "return_order_drafted",
+                    f"return_order request {req.id} drafted "
+                    f"({'full' if scripted.full_return else 'partial'})",
+                    request_id=req.id, cust_nb=cust_nb)
+        return req
+
+    def build_reorder(self, voice, scripted: ScriptedOrderResult):
+        """reorder -> PendingRequest, reusing the existing prior-order
+        machinery (PriorOrderService.resolve_target_explicit + _from_prior)."""
+        cust_nb = (scripted.customer.customer_number
+                  if scripted.customer and
+                  scripted.customer.status == MatchStatus.MATCHED else None)
+
+        target, ambiguity = None, "customer_not_resolved"
+        if cust_nb:
+            target, ambiguity = self.prior.resolve_target_explicit(
+                cust_nb, scripted.reorder_mode, scripted.order_reference)
+        log_activity(
+            self.s, "reorder_resolved",
+            f"scripted reorder for {cust_nb} resolved to order "
+            f"{target.order_nb}" if target else
+            f"scripted reorder for {cust_nb} could not resolve a target "
+            f"order ({ambiguity})",
+            level="info" if target else "warn", cust_nb=cust_nb,
+            voice_message_id=voice.id,
+            details={"ambiguity": ambiguity} if ambiguity else {})
+
+        lines = self._from_prior(target)
+        flags = [] if target else [f"reorder_{ambiguity}"]
+        if scripted.customer and scripted.customer.status != MatchStatus.MATCHED:
+            flags.append(f"customer_{scripted.customer.status.value}")
+
+        req = PendingRequest(
+            voice_message_id=voice.id, cust_nb=cust_nb,
+            intents=[Intent.repeat_order.value],
+            primary_intent=Intent.repeat_order.value,
+            target_order_nb=target.order_nb if target else None,
+            target_order_type=target.order_type if target else None,
+            raw_model_output={"scripted": True, "command_type": "reorder",
+                              "mode": scripted.reorder_mode,
+                              "reference": scripted.order_reference},
+            flags=flags,
+            classification_quality="good" if target else "questionable",
+            status="new")
+        req.lines = lines
+        self.s.add(req)
+        self.s.flush()
+        return req

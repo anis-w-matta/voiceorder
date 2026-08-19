@@ -2,13 +2,14 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.errors import (AlreadyCommitted, RequestNotFound,
+from app.errors import (AlreadyCommitted, CustomerNotFound, RequestNotFound,
                         RequestNotReviewable, UnresolvedLines)
-from app.models import (Item, OrderDetail, OrderHeader, PendingLine,
+from app.models import (Customer, Item, OrderDetail, OrderHeader, PendingLine,
                         PendingRequest)
 from app.schemas.enums import RequestStatus
 from app.services.activity_log import log as log_activity
 from app.services.activity_log import log_standalone
+from app.services.alias_learning import maybe_learn_alias
 from app.services.item_classifier import UNABLE_TO_CLASSIFY
 
 
@@ -38,6 +39,19 @@ class OrderCommitService:
                           f"request was rejected, not in buffer state",
                           level="warn", request_id=req.id, cust_nb=req.cust_nb)
             raise RequestNotReviewable()
+
+        # Database is the source of truth for customer identity: a request
+        # must never be committed into an order for a customer number that
+        # doesn't actually exist, and there is no operator action that can
+        # override this - it is checked here regardless of how the request
+        # got its cust_nb.
+        if not req.cust_nb or self.s.get(Customer, req.cust_nb) is None:
+            log_standalone(
+                "commit_denied",
+                f"commit of request {req.id} refused: customer "
+                f"{req.cust_nb!r} does not exist", level="warn",
+                request_id=req.id, cust_nb=req.cust_nb)
+            raise CustomerNotFound(req.cust_nb)
 
         self._apply_edits(req, line_edits, removed_line_nbs or [])
 
@@ -71,7 +85,8 @@ class OrderCommitService:
         log_activity(self.s, "order_committed",
                     f"request {req.id} committed as order {order_nb}",
                     request_id=req.id, cust_nb=req.cust_nb, order_nb=order_nb,
-                    details={"operator": operator, "order_type": order_type})
+                    details={"operator": operator, "order_type": order_type,
+                             "primary_intent": req.primary_intent})
         return self.s.get(OrderHeader, (order_nb, order_type))
 
     def _apply_edits(self, req, line_edits, removed_line_nbs):
@@ -95,6 +110,11 @@ class OrderCommitService:
                 req.lines.append(line)
                 by_nb[e.line_nb] = line
             if e.item_nb is not None and e.item_nb != line.item_nb:
+                suggested = (line.candidates[0]["item_nb"]
+                            if line.candidates else None)
+                maybe_learn_alias(
+                    self.s, raw_text=line.raw_text, item_nb=e.item_nb,
+                    suggested_item_nb=suggested, remember=e.remember_alias)
                 line.item_nb = e.item_nb
                 line.match_method = "manual"
                 line.operator_edited = True

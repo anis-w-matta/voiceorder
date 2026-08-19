@@ -5,11 +5,7 @@ class Intent(str, Enum):
     add_order = "add_order"
     repeat_order = "repeat_order"
     repeat_order_adjusted = "repeat_order_adjusted"
-    update_order = "update_order"
-    cancel_order = "cancel_order"
-    get_invoice = "get_invoice"
-    get_bill = "get_bill"
-    catalogue_request = "catalogue_request"
+    return_order = "return_order"
     other = "other"
 
 

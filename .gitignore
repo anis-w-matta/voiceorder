@@ -1,5 +1,6 @@
 .env
 .venv/
+.venv_explore/
 __pycache__/
 *.wav
 *.m4a

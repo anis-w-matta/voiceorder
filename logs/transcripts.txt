@@ -1,0 +1,95 @@
+=== C:\Users\anisw\Desktop\test_voice\Ao,gi,rc.m4a ===
+language: ar (ar)
+duration: 28.1s  confidence: 0.000
+text: مرحبا كيفكم معكم فادي صليبا من شركة تست تريدينغ انا بدي احط اول شي عندكم طلبية بدي دهان اصفر 5 لتر 5 برميل وبدي كمان دهان ابيض 5 لتر برميل وبدي كمان انفويس كشف حساب عني وكمان بدي استفسر ايش في عندكم غير الوان غير هودو
+
+=== C:\Users\anisw\Desktop\test_voice\BN.m4a ===
+language: ar (ar)
+duration: 28.6s  confidence: 0.000
+text: مرحبا كيفكم معكم شركة زحلة بدي احط انا اوردر جديد بدي ابيض اصفر احمر اخضر بدي اثنين من الابيض ثلاثة من الاحمر خمسة من الاصفر واثنين من الاخضر وبدي كمان اذا فيكم تبعتوا لي فاتورة معهم وممنونكم
+
+=== C:\Users\anisw\Desktop\test_voice\C,o.m4a ===
+language: ar (ar)
+duration: 21.8s  confidence: 0.000
+text: مرحبا كيفكم؟ أنا آخر أوردر طلبته بدي أعمله كنسل، الأوردر رقمه 251340 بدي أعمله كنسل ومحله بدي أحط أوردر جديد هو فيه بكون بقلبه 5 حبات دهان أحمر و3 دهان أزرق.
+
+=== C:\Users\anisw\Desktop\test_voice\Daa chady.m4a ===
+language: ar (ar)
+duration: 34.3s  confidence: 0.000
+text: بدي اعمل ري اوردر ل شو اسمه لسطولة هيدا الدهان المعمولين الاحمر احمر بدي تبع الاحمر اللي عادة بناخدها هي بدي سطلين وكمان هودي اللي بيجوا مطولين نحطهم ندقهم شو اسمه شو اسمه شو اسمه يا الله لك هو بيجيبوا شاكوش وبيدقون بدي علبة منهم اذا فهمتوا علي وبس
+
+=== C:\Users\anisw\Desktop\test_voice\Gib.m4a ===
+language: ar (ar)
+duration: 4.7s  confidence: 0.000
+text: خش بش نش تش خش بش تش تش
+
+=== C:\Users\anisw\Desktop\test_voice\Ginvo.m4a ===
+language: ar (ar)
+duration: 24.0s  confidence: 0.000
+text: مرحبا كيفكم؟ معكم زاك من شركة بيروت هاردوير. أنا بدي أرجع عيد طلبية اللي عملتها بتاريخ 25/3/2026 وكمان بدي شيك حسابي على حسابي.
+
+=== C:\Users\anisw\Desktop\test_voice\Lo.m4a ===
+language: ar (ar)
+duration: 110.8s  confidence: 0.000
+text: مرحبا كيفكم كله تمام؟ بدي أنا حط أوردر، الأوردر تبعي شوي كبير، حدا بياخد وقت. بدي بالأوردر أول شي حط 3 دهان أزرق، 3 أبيض، 3 أخضر. وعادا عن هود التلاتة بدي حط كمان 3 برو و3 موف إذا عندكم. إذا ما عندكم بديل الموف بدي حط وصلني. وإذا ما عندكم دهان موف بدي محله الود فارنيش. وكمان بدي كيس ترابة سودا، سمنت. بدي كمان كيس رمل، كيس بحص، علبة مسامير. وبدي شرايط كهربا ال 100 متر. بدي لايت سويتش شي 5، 6. ماني متأكد بعد من الكمية، برجع بقولكم قديه عالمظبوط. وبدي كمان عدا عن البينت رولر هيدا أكيد بدي عالقليلة شي 6، 7. حاخد 10. وبدي ماسكات، بدي كتير ماسكات، بدي شي 100، 100 ماسك. إذا فيكم بس تلحقوا لي فيهم، ترجعوا تقولوا لي قديه بيكلفوا، شو هي الفاتورة. إذا فيكم ترجعوا تدقوا لي بكون تمام. وإذا فيكم إيه فهيك. وبدي كمان عدا عن هو كلهم سوا، كلهم سوا، هلا اتذكرت، بدي لمبات. بدي 5، 6، بدي 5 لمبات بالعادية. و باور سكت أوتلت. بدي 7. شكراً.
+
+=== C:\Users\anisw\Desktop\test_voice\Longer sl.m4a ===
+language: en (en, ar)
+duration: 13.1s  confidence: 0.000
+text: Hello, how are you? كيف حالك؟
+
+=== C:\Users\anisw\Desktop\test_voice\Nc.m4a ===
+language: ar (ar)
+duration: 8.4s  confidence: 0.000
+text: مرحبا كيفكم؟ بدي احط اوردر جديد، بدي اطلب من عندكم 3 دهن ابيض و3 اخضر.
+
+=== C:\Users\anisw\Desktop\test_voice\Other1.m4a ===
+language: ar (ar)
+duration: 47.2s  confidence: 0.000
+text: مرحبا كيفكم؟ أنا كستمر عندكم، أنا من شركة بيروت هاردوير كو، أنا من عندكم بالعملية بدي أعمل كومبلين عن موظف اسمه الحبيب، حكينا وقتا تعي وصلنا الأوردر على حساب كل شي، الأوردر بعتوا لي نوتيفيكيشن مشي بس تا وصل الأوردر تاني جمعة، شو عمل؟ شو صار؟ لفت إيدها ما بعرف، فإذا فينا نحكي مع شي حدا مسؤول بكون تمام.
+
+=== C:\Users\anisw\Desktop\test_voice\Others.m4a ===
+language: ar (ar)
+duration: 4.7s  confidence: 0.000
+text: مرحبا كيفكم عندكم بطاطا شي
+
+=== C:\Users\anisw\Desktop\test_voice\Rogood.m4a ===
+language: ar (ar, en)
+duration: 24.3s  confidence: 0.000
+text: مرحبا، أنا من شركة Test Trading، بدي أحط بدي أعمل reordering للأوردر يلي عملته ب 26/8/10 على الساعة 3:58 دقيقة PM.
+
+=== C:\Users\anisw\Desktop\test_voice\Rowd,gi,gb.m4a ===
+language: ar (ar)
+duration: 23.3s  confidence: 0.000
+text: نحنا شركة زحلة، إذا مش غلطان، أنت طلبت منا من عندكم طلبية بال 2025، 25، تاريخ 2/25. بدي ولو أرجع أعمل ري أوردر لهالطلبية، وبدي كمان أجيب الفاتورة وأجيب الإنڤويس.
+
+=== C:\Users\anisw\Desktop\test_voice\Sl,gb,rowa.m4a ===
+language: ar (ar)
+duration: 40.6s  confidence: 0.000
+text: مرحبا كيفكم بس انا بدي اطلب زيت الطلبية اللي طلبتها اخر مرة اخر مرة كانت يمكن من شي شهر شهرين مش ذاكر بس بدي ارجع اعيد ذات الطلبية مع فرق واحد انه بدل ما يكون في عندي خمس حبات بدي 50 حبة دهان اصفر وبدي فاتورة عنهم كمان
+
+=== C:\Users\anisw\Desktop\test_voice\UEI.m4a ===
+language: ar (ar)
+duration: 4.0s  confidence: 0.000
+text: مرحبا بدي من عندكم 2 كيلو خيار 2 كيلو بندورة
+
+=== C:\Users\anisw\Desktop\test_voice\Uo.m4a ===
+language: ar (ar)
+duration: 23.6s  confidence: 0.000
+text: مرحبا كيفكم؟ نحن شركة سحلة حاطين اوردر عندكم بس بدي غيره مش غيره غلطنا بالكمية بدل 3 براميل حمر بدي 2 وبدل برميلين ازرق بدي 3 بالعملية اذا فيكم تظبطولنا اياهم
+
+=== C:\Users\anisw\Desktop\test_voice\Vo.m4a ===
+language: ar (ar, en)
+duration: 20.1s  confidence: 0.000
+text: مرحبا بدي أودر من عندكم بدي يكون 5 أصفر 5 أحمر و 5 بلو سيل تو بلي
+
+=== C:\Users\anisw\Desktop\test_voice\Vs,ro.m4a ===
+language: en (en, ar)
+duration: 2.9s  confidence: 0.000
+text: I want to reorder the same order مثل آخر مرة
+
+=== C:\Users\anisw\Desktop\test_voice\Ws.m4a ===
+language: ar (ar)
+duration: 17.2s  confidence: 0.000
+text: مرحبا كيفكم معكم من شركة تاس تريدينغ بدي حط اوردر جديد من عندكم بدي خمسة طولة بيض بليز
+

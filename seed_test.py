@@ -6,10 +6,9 @@ Run against the test schema only - never against the dev/prod database:
         .venv/Scripts/python seed_test.py
 
 Deliberately includes a few edge cases so tests have real fixtures for them:
-  - I999 has no unit_price (bill "has_missing_prices" path)
-  - C003 has no email on file (bill still sends to the fixed recipient, but
-    exercises the customer-with-no-email path)
-  - order 990000003 has zero lines (EmptyOrder path)
+  - I999 has no unit_price
+  - C003 has no email on file
+  - order 990000003 has zero lines
   - order 990000004 belongs to C002, used to exercise the "wrong customer"
     mismatch path against C001
 """

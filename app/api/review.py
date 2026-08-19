@@ -5,11 +5,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_operator
-from app.errors import (AlreadyCommitted, AlreadyDecided, RequestNotFound,
-                        RequestNotReviewable, UnresolvedLines)
+from app.errors import (AlreadyCommitted, AlreadyDecided, CustomerNotFound,
+                        RequestNotFound, RequestNotReviewable,
+                        UnresolvedLines)
 from app.models import PendingRequest
 from app.schemas.api_in import AcceptIn, CallbackIn, RejectIn
 from app.schemas.enums import RequestStatus
+from app.services.activity_log import log as log_activity
 from app.services.commit import OrderCommitService
 from app.services.numbering import OrderNumberService
 
@@ -45,6 +47,10 @@ def accept(req_id: int, body: AcceptIn, s: Session = Depends(get_db),
                        body.removed_line_nbs)
     except RequestNotFound:
         raise HTTPException(404, "no such request")
+    except CustomerNotFound:
+        raise HTTPException(
+            404, "request denied: customer number does not exist - please "
+                "call again")
     except AlreadyCommitted as e:
         raise HTTPException(409, f"already committed as {e.order_nb}")
     except UnresolvedLines:
@@ -66,6 +72,10 @@ def reject(req_id: int, body: RejectIn, s: Session = Depends(get_db),
     r.decision_note = f"{body.reason}: {body.note or ''}"
     r.decided_by = operator
     r.decided_at = datetime.now(timezone.utc)
+    log_activity(s, "request_rejected",
+                f"request {r.id} rejected by {operator}: {body.reason}",
+                request_id=r.id, cust_nb=r.cust_nb,
+                details={"operator": operator, "reason": body.reason})
     return {"ok": True}
 
 

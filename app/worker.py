@@ -10,8 +10,7 @@ from app.models import VoiceMessage
 from app.pipeline import IntakePipeline
 from app.services.activity_log import log as log_activity
 from app.services.audio_store import AudioStore
-from app.services.classifier import OllamaClassifier
-from app.services.transcriber import WhisperTranscriber, build_catalogue_prompt
+from app.services.gemini_transcriber import GeminiTranscriber
 
 # Windows consoles/log redirection default to the legacy cp1252 codepage.
 # Without this, print()ing an exception that echoes back Arabic transcript
@@ -77,12 +76,8 @@ class Worker:
 
 
 def main():
-    with session_scope() as s:
-        prompt = build_catalogue_prompt(s)
-    stt = WhisperTranscriber(catalogue_prompt=prompt)
-    clf = OllamaClassifier()
-    clf.warm()
-    w = Worker(IntakePipeline(stt, clf, AudioStore()))
+    stt = GeminiTranscriber()
+    w = Worker(IntakePipeline(stt, AudioStore()))
     signal.signal(signal.SIGINT, w.stop)
     signal.signal(signal.SIGTERM, w.stop)
     w.run()

@@ -6,52 +6,122 @@ class Settings(BaseSettings):
 
     database_url: str
 
-    ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "qwen3"
-    ollama_keep_alive: str = "30m"
-    ollama_timeout: float = 120.0
-
-    whisper_model: str = "large-v3"
-    whisper_device: str = "cpu"
-    whisper_compute: str = "int8"
-    whisper_beam_size: int = 1
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-3.1-flash-lite"
 
     audio_dir: str = "C:/voiceorder/audio"
     default_phone_region: str = "LB"
     expected_languages: list[str] = ["en", "ar"]
+    # IANA zone used to resolve a spoken calendar-day reference ("the order
+    # from yesterday", "August 17") to a UTC instant range - see
+    # get_order_nb_from_date in app/services/prior_order.py. created_at is
+    # stored as a UTC instant (DateTime(timezone=True)); truncating it to a
+    # date via the database session's own timezone setting (which defaults
+    # to UTC and is not otherwise controlled by this app) would silently
+    # disagree with what the customer means by "day" whenever the two
+    # differ, so the day boundary is computed here instead, in this zone.
+    business_timezone: str = "Asia/Beirut"
 
     fuzzy_accept: float = 0.85
     fuzzy_suggest: float = 0.60
-    transcript_conf_min: float = -0.6      # avg_logprob: NEGATIVE scale
-    max_audio_seconds: int = 300
+    # Threshold for the fuzzy alias substring/window match in
+    # ItemResolver.find_in_text (rapidfuzz.fuzz.ratio, 0-100 scale).
+    fuzzy_alias_threshold: int = 80
+    # If the runner-up candidate is within this much of the top score, the
+    # two items are effectively tied and picking one over the other isn't a
+    # match, it's a coin flip - see TIE_EPSILON usage in item_resolver.py.
+    resolver_tie_epsilon: float = 0.02
+    # Subtracted from a candidate's score when its inferred size/color
+    # conflicts with an explicitly-stated attribute. Chosen so a conflicting
+    # candidate scoring at fuzzy_accept (0.85) drops to 0.50 - below
+    # fuzzy_suggest (0.60), i.e. excluded from suggestions entirely.
+    attribute_conflict_penalty: float = 0.35
 
-    # Access control. Both default to off so an existing local deployment
-    # keeps working, but on anything reachable beyond localhost they need to
-    # be set: without api_key every endpoint (including the voice recordings
-    # at /audio/{id}) is open, and without a known operator list the
-    # X-Operator header is whatever the caller types.
+    # Retry/backoff for Gemini API calls - see app/services/gemini_retry.py.
+    # Only retryable errors (429, 5xx, transient network failures) consume
+    # these attempts; permanent failures (auth, malformed request) never
+    # retry regardless of this count.
+    gemini_max_retries: int = 4
+    gemini_retry_base_seconds: float = 1.0
+    gemini_retry_max_seconds: float = 8.0
+
+    # Conditional transcription retry - see app/services/transcript_quality.py
+    # and GeminiTranscriber.transcribe. A second transcription attempt only
+    # happens when the first is "questionable", capped by this maximum -
+    # never retried unconditionally (Gemini bills per audio second).
+    max_transcription_attempts: int = 2
+    transcript_min_chars_per_second: float = 0.6
+    transcript_repetition_threshold: float = 0.5
+    transcript_disagreement_edit_threshold: float = 0.55
+    transcript_disagreement_token_overlap_min: float = 0.5
+
+    # Worker-level rate limiting for Gemini API calls, shared across the
+    # transcriber and classifier - see app/services/rate_limiter.py.
+    # Conservative defaults so the worker never runs at 100% of the
+    # free-tier quota; the account's actual current limit should be
+    # checked in AI Studio and this raised only if it's genuinely higher.
+    gemini_rpm_limit: int = 10
+    gemini_max_concurrent: int = 1
+    # 0.0-1.0 scale - GeminiTranscriber reports its own self-rated
+    # confidence per transcript (see PROMPT in gemini_transcriber.py); this
+    # is the cutoff below which low_transcript_confidence fires. 0.5
+    # matches the prompt's own definition of "large parts were a guess".
+    transcript_conf_min: float = 0.5
+    # Recordings longer than this skip transcription/classification entirely
+    # (Gemini billing is per audio second, so there's no point paying to
+    # transcribe something this long) and land straight in the review queue
+    # flagged audio_too_long - see IntakePipeline.process.
+    max_audio_seconds: int = 120
+
+    # Access control. api_key defaults to off so an existing local deployment
+    # keeps working, but on anything reachable beyond localhost it needs to
+    # be set: without it every endpoint (including the voice recordings at
+    # /audio/{id}) is open.
     api_key: str | None = None
-    operators: list[str] = []
+
+    # Salesman auth (app/services/auth.py, app/api/auth.py). jwt_secret has
+    # no default on purpose - every deployment must set its own via .env
+    # (generate with `python -c "import secrets;print(secrets.token_hex(32))"`)
+    # rather than sharing a checked-in value that would let anyone forge a
+    # login token.
+    jwt_secret: str
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 20160  # 14 days - mobile sessions stay signed in
+
+    product_catalog_path: str = "Product.xlsm"
+    # Editable JSON file of the scripted-command anchor phrases (place/
+    # return/reorder grammar) - see app/services/scripted/config.py. Add a
+    # phrasing/language variant by editing this file and restarting; no
+    # code change needed.
+    anchor_phrases_path: str = "app/services/scripted/anchor_phrases.json"
+    # rapidfuzz score (0-100) a command/customer/items/end anchor phrase
+    # must clear to count as "found" - see command_parser.py.
+    fuzzy_delimiter_threshold: float = 70.0
+    # rapidfuzz score (0-100) a customer name/number must clear to be
+    # returned as matched (below this: not_found) - see match_customer.py.
+    customer_match_threshold: float = 75.0
+    # If the runner-up customer candidate is within this of the top score,
+    # the match is ambiguous rather than accepted - same tie-safety idea as
+    # item_resolver.TIE_EPSILON, just scaled to the 0-100 rapidfuzz range.
+    customer_match_tie_margin: float = 5.0
+    # rapidfuzz score (0-100) an item candidate must clear before being
+    # considered a plausible match at all - see match_item.py.
+    item_fuzzy_threshold: float = 75.0
+    # Score gap (0-100) below which the top-2 item candidates are treated
+    # as tied/ambiguous rather than a confident top-1 pick.
+    item_ambiguity_margin: float = 5.0
+    # How many rapidfuzz candidates match_item.py generates before applying
+    # numeric-conflict checks / confidence scoring.
+    top_k_candidates: int = 10
+    # Subtracted from an item candidate's score when its numeric pack/size
+    # tokens (e.g. "12X4") conflict with tokens actually spoken (e.g.
+    # "20X4") - large enough that a conflicting candidate can never
+    # outscore a clean one at a merely-similar text score.
+    numeric_conflict_penalty: float = 40.0
 
     worker_poll_seconds: float = 2.0
     worker_max_attempts: int = 3
     worker_stale_minutes: int = 20
-
-    # Bill delivery. Left blank on purpose - fill smtp_password in the local
-    # .env, never in chat/source control. Without it, bill requests still
-    # render the bill but return it undelivered rather than failing closed.
-    smtp_host: str | None = None
-    smtp_port: int = 587
-    smtp_user: str | None = None
-    smtp_password: str | None = None
-    smtp_from: str = "Voice Order Intake <noreply@voiceorder.local>"
-    bill_recipient_email: str = "anis.w.matta@gmail.com"
-
-    # Automated "customer requested a bill" notification (get_bill intent,
-    # validated cust_nb/order_nb pair) - separate from bill_recipient_email
-    # above, which is where the manually-triggered POST /bills/request full
-    # HTML bill is sent.
-    bill_request_notify_email: str = "anis.matta@net.usek.edu.lb"
 
 
 settings = Settings()

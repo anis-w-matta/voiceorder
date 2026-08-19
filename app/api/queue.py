@@ -22,6 +22,12 @@ def list_queue(status: str | None = None, flag: str | None = Query(None),
     q = select(PendingRequest).order_by(PendingRequest.created_at.desc())
     if status:
         q = q.where(PendingRequest.status == status)
+    else:
+        # A "queue" is pending work by default - once a request is decided
+        # (accepted/rejected) it shouldn't keep showing up here or as the
+        # Request screen's "most recent" fallback. Still reachable via an
+        # explicit ?status=committed/rejected for a future history view.
+        q = q.where(PendingRequest.status.notin_(DECIDED))
     if flag:
         # Filter in SQL (jsonb @> '["flag"]'). Doing this in Python after the
         # LIMIT meant the filter only ever saw the first `limit` rows, so a

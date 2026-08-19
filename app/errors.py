@@ -2,11 +2,11 @@ class VoiceOrderError(Exception):
     pass
 
 
-class TranscriptionFailed(VoiceOrderError):
+class AudioReadFailed(VoiceOrderError):
     pass
 
 
-class ClassificationFailed(VoiceOrderError):
+class TranscriptionFailed(VoiceOrderError):
     pass
 
 
@@ -47,32 +47,19 @@ class UnresolvedLines(VoiceOrderError):
     pass
 
 
-class OrderNotFound(VoiceOrderError):
-    def __init__(self, order_nb: str, order_type: str):
-        self.order_nb = order_nb
-        self.order_type = order_type
-        super().__init__(f"No order {order_nb}/{order_type}")
+class CustomerNotFound(VoiceOrderError):
+    """No customer row exists for this number.
 
-
-class OrderCustomerMismatch(VoiceOrderError):
-    """The order exists but belongs to a different customer.
-
-    Bill requests are keyed by (cust_nb, order_nb) from whoever is asking,
-    so this is the check that stops customer A from pulling a bill for
-    customer B's order by guessing/enumerating order numbers.
+    Guards OrderCommitService.commit(): order_header.cust_nb has no FK
+    constraint to customer (see the migration), so nothing at the database
+    level stops an order being created for a customer number that doesn't
+    exist. This is the explicit check that closes that gap - a request
+    must never become an order for a customer the database doesn't know
+    about, and no operator action can override that.
     """
 
-    def __init__(self, order_nb: str, cust_nb: str):
-        self.order_nb = order_nb
+    def __init__(self, cust_nb: str | None):
         self.cust_nb = cust_nb
-        super().__init__(f"Order {order_nb} does not belong to {cust_nb}")
+        super().__init__(f"No customer {cust_nb!r}")
 
 
-class EmptyOrder(VoiceOrderError):
-    def __init__(self, order_nb: str):
-        self.order_nb = order_nb
-        super().__init__(f"Order {order_nb} has no lines")
-
-
-class SmtpNotConfigured(VoiceOrderError):
-    pass

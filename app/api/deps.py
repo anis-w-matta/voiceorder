@@ -1,18 +1,19 @@
 import secrets
 from typing import Iterator
 
-from fastapi import Header, HTTPException
+import jwt
+from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import session_scope
+from app.models import Salesman
 from app.services.audio_store import AudioStore
-from app.services.mailer import Mailer
+from app.services.auth import decode_token
 from app.services.phone import PhoneNormaliser
 
 _audio = AudioStore()
 _phone = PhoneNormaliser()
-_mailer = Mailer()
 
 
 def get_db() -> Iterator[Session]:
@@ -28,10 +29,6 @@ def get_phone() -> PhoneNormaliser:
     return _phone
 
 
-def get_mailer() -> Mailer:
-    return _mailer
-
-
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
     """Shared-secret gate, active only once `api_key` is configured.
 
@@ -45,16 +42,27 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
         raise HTTPException(401, "missing or invalid API key")
 
 
-def get_operator(x_operator: str | None = Header(default=None)) -> str:
-    """Identify the acting operator.
+def get_current_salesman(authorization: str | None = Header(default=None),
+                         s: Session = Depends(get_db)) -> Salesman:
+    """Identify the acting salesman from a bearer token issued by
+    POST /auth/login (app/api/auth.py, app/services/auth.py).
 
-    The header is still self-asserted; configuring `operators` at least
-    restricts it to a known roster so claims and decisions cannot be
-    attributed to an arbitrary made-up name.
+    Replaces the old free-text X-Operator header: a token can only exist
+    for a real, still-active salesman row, so claims and decisions can no
+    longer be attributed to an arbitrary made-up name.
     """
-    name = (x_operator or "").strip()
-    if not name:
-        raise HTTPException(400, "X-Operator header required")
-    if settings.operators and name not in settings.operators:
-        raise HTTPException(403, f"unknown operator {name!r}")
-    return name
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, "missing bearer token")
+    token = authorization[len("bearer "):].strip()
+    try:
+        login_id = decode_token(token)
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "invalid or expired token")
+    salesman = s.get(Salesman, login_id)
+    if salesman is None or not salesman.is_active:
+        raise HTTPException(401, "invalid or expired token")
+    return salesman
+
+
+def get_operator(salesman: Salesman = Depends(get_current_salesman)) -> str:
+    return salesman.login_id

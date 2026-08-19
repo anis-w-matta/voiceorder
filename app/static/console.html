@@ -115,6 +115,7 @@
   .badge.level-warn{background:var(--amber-weak);color:var(--amber)}
   .badge.level-error{background:var(--red-weak);color:var(--red)}
   #activityTable td{font-size:12.5px}
+
 </style>
 </head>
 <body>
@@ -152,7 +153,15 @@
         <option value="multi_intent">multi_intent</option>
         <option value="cancellation">cancellation</option>
         <option value="no_lines_extracted">no_lines_extracted</option>
+        <option value="uncertain_classification">uncertain_classification</option>
         <option value="unknown_caller">unknown_caller</option>
+        <option value="uncertain_transcription">uncertain_transcription</option>
+        <option value="transcription_disagreement">transcription_disagreement</option>
+        <option value="ambiguous_catalogue_match">ambiguous_catalogue_match</option>
+        <option value="attribute_conflict">attribute_conflict</option>
+        <option value="unknown_alias">unknown_alias</option>
+        <option value="unknown_promotion">unknown_promotion</option>
+        <option value="quantity_parse_error">quantity_parse_error</option>
       </select>
       <button class="ghost" id="refreshBtn" title="Refresh now">⟳</button>
     </div>
@@ -197,6 +206,7 @@
   </div>
 </div>
 
+
 <div class="toast-wrap" id="toastWrap"></div>
 
 <script>
@@ -207,9 +217,13 @@ let removedLines = new Set();
 
 const FLAG_LEVEL = {
   low_transcript_confidence: "bad", unresolved_items: "bad", cancellation: "bad",
+  uncertain_classification: "bad", ambiguous_catalogue_match: "bad",
+  attribute_conflict: "bad",
   very_short_audio: "warn", long_audio: "warn", unexpected_language: "warn",
   unknown_caller: "warn", missing_qty: "warn", no_lines_extracted: "warn",
   no_open_orders: "warn", multiple_open_orders: "warn",
+  uncertain_transcription: "warn", transcription_disagreement: "warn",
+  unknown_alias: "warn", unknown_promotion: "warn", quantity_parse_error: "warn",
   arabic_speech: "info", mixed_language: "info", multi_intent: "info",
 };
 
@@ -318,18 +332,22 @@ function renderDetail(){
     const removed = removedLines.has(l.line_nb);
     const candOpts = (l.candidates||[]).map(c =>
       `<option value="${c.item_nb}" data-desc="${escapeAttr(c.item_desc)}"
-        ${c.item_nb===l.item_nb?"selected":""}>${c.item_nb} — ${c.item_desc} (${c.score.toFixed(2)})</option>`
+        ${c.item_nb===l.item_nb?"selected":""}>${c.item_nb} — ${c.item_desc} (${c.score.toFixed(2)})${c.attribute_conflict?" ⚠ attribute mismatch":""}</option>`
     ).join("");
     return `
       <tr class="${removed?'removed':''}" data-line="${l.line_nb}">
-        <td>${l.line_nb}<div class="raw">"${escapeHtml(l.raw_text)}"${l.raw_lang?` · ${l.raw_lang}`:''}</div></td>
+        <td>${l.line_nb}<div class="raw">"${escapeHtml(l.raw_text)}"${l.raw_lang?` · ${l.raw_lang}`:''}</div>${l.change?`<span class="badge ${l.change==='remove'?'flag-bad':'flag-info'}">${l.change}</span>`:''}</td>
         <td>
           <select class="cand-select">
             <option value="">— manual —</option>
             ${candOpts}
           </select>
           <input type="text" class="item-nb" placeholder="item #" value="${l.item_nb||''}">
-          <div class="conf">${l.match_method||'unmatched'}${l.match_confidence!=null?' · '+l.match_confidence.toFixed(2):''}</div>
+          <div class="conf">${l.match_method||'unmatched'}${l.match_confidence!=null?' · '+l.match_confidence.toFixed(2):''}${l.resolution_meta&&l.resolution_meta.margin!=null?' · margin '+l.resolution_meta.margin.toFixed(2):''}</div>
+          ${(l.line_flags||[]).length?`<div>${l.line_flags.map(flagBadge).join(" ")}</div>`:""}
+          <label style="display:block;font-size:11px;color:var(--muted)">
+            <input type="checkbox" class="remember-alias"> Remember correction as alias?
+          </label>
         </td>
         <td><input type="text" class="item-desc" placeholder="description" value="${escapeAttr(l.item_desc||'')}"></td>
         <td><input type="number" step="0.001" class="qty" value="${l.qty!=null?l.qty:''}"></td>
@@ -382,7 +400,8 @@ function renderDetail(){
       <div class="actions add-line">
         <button class="ghost" id="addLineBtn" style="border:1px dashed var(--border)" ${decided?"disabled":""}>+ Add line</button>
         <label style="font-size:12px;color:var(--muted)">Order type
-          <input type="text" class="otype" id="orderType" value="SO"></label>
+          <input type="text" class="otype" id="orderType"
+            value="${d.primary_intent==='return_order'?'RETURN':'SO'}"></label>
         <button id="acceptBtn" class="primary" ${decided?"disabled":""}>Accept &amp; commit</button>
       </div>
     </div>
@@ -498,12 +517,14 @@ async function doAccept(){
     const itemDesc = tr.querySelector(".item-desc").value.trim();
     const qty = tr.querySelector(".qty").value;
     const uom = tr.querySelector(".uom").value.trim();
+    const rememberAlias = tr.querySelector(".remember-alias").checked;
     lines.push({
       line_nb: nb,
       item_nb: itemNb || null,
       item_desc: itemDesc || null,
       qty: qty === "" ? null : qty,
       uom: uom || null,
+      remember_alias: rememberAlias,
     });
   });
   const orderType = document.getElementById("orderType").value.trim() || "SO";
@@ -587,13 +608,12 @@ async function loadActivity(){
 }
 
 function showView(view){
-  const isActivity = view === "activity";
-  document.getElementById("queueView").style.display = isActivity ? "none" : "grid";
-  document.getElementById("activityView").style.display = isActivity ? "block" : "none";
-  document.getElementById("queueTabBtn").classList.toggle("active", !isActivity);
-  document.getElementById("activityTabBtn").classList.toggle("active", isActivity);
+  document.getElementById("queueView").style.display = view === "queue" ? "grid" : "none";
+  document.getElementById("activityView").style.display = view === "activity" ? "block" : "none";
+  document.getElementById("queueTabBtn").classList.toggle("active", view === "queue");
+  document.getElementById("activityTabBtn").classList.toggle("active", view === "activity");
   clearInterval(activityTimer);
-  if (isActivity) {
+  if (view === "activity") {
     loadActivity();
     activityTimer = setInterval(loadActivity, 10000);
   }

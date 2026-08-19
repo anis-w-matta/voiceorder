@@ -5,12 +5,34 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.db import SessionLocal
-from app.models import (ActivityLog, OrderDetail, OrderHeader, PendingLine,
-                        PendingRequest, VoiceMessage)
+from app.db import SessionLocal, session_scope
+from app.models import (ActivityLog, ItemAlias, OrderDetail, OrderHeader,
+                        PendingLine, PendingRequest, Salesman, VoiceMessage)
 from app.main import app
+from app.services.auth import create_token, hash_password
 
 client = TestClient(app)
+
+
+def _ensure_salesman(login_id, name):
+    with session_scope() as s:
+        sm = s.get(Salesman, login_id)
+        if sm is None:
+            s.add(Salesman(login_id=login_id,
+                           password_hash=hash_password("testpass123"),
+                           name=name, email=f"{login_id}@example.com"))
+        else:
+            sm.is_active = True
+
+
+# Every test below authenticates as one of these two salesmen via bearer
+# token (get_operator, app/api/deps.py) instead of the old free-text
+# X-Operator header - login_id doubles as the "operator" name asserted
+# on claimed/committed/decided rows.
+TOKENS = {}
+for _login_id in ("alice", "bob"):
+    _ensure_salesman(_login_id, _login_id.title())
+    TOKENS[_login_id] = create_token(_login_id)
 
 
 def _make_request(status="new", cust_nb="C001", lines=None, assigned_to=None):
@@ -121,6 +143,14 @@ def test_get_request_detail_shape(fresh_request):
     assert len(body["lines"]) == 1
     assert body["lines"][0]["item_nb"] == "A100"
     assert body["cust_nb"] == "C001"
+    # New per-line reliability fields round-trip through the queue API even
+    # when unset, so the dashboard can render them unconditionally.
+    line = body["lines"][0]
+    assert line["line_flags"] == []
+    assert line["resolution_meta"] == {}
+    assert line["attributes"] == {}
+    assert line["qualifiers"] == {}
+    assert line["change"] is None
 
 
 def test_get_request_detail_404():
@@ -132,7 +162,7 @@ def test_get_request_detail_404():
 
 def test_claim_success(fresh_request):
     _, req_id = fresh_request
-    resp = client.post(f"/queue/{req_id}/claim", headers={"X-Operator": "alice"})
+    resp = client.post(f"/queue/{req_id}/claim", headers={"Authorization": f"Bearer {TOKENS['alice']}"})
     assert resp.status_code == 200
     detail = client.get(f"/queue/{req_id}").json()
     assert detail["assigned_to"] == "alice"
@@ -141,34 +171,41 @@ def test_claim_success(fresh_request):
 
 def test_claim_conflict_when_claimed_by_other(fresh_request):
     _, req_id = fresh_request
-    client.post(f"/queue/{req_id}/claim", headers={"X-Operator": "alice"})
-    resp = client.post(f"/queue/{req_id}/claim", headers={"X-Operator": "bob"})
+    client.post(f"/queue/{req_id}/claim", headers={"Authorization": f"Bearer {TOKENS['alice']}"})
+    resp = client.post(f"/queue/{req_id}/claim", headers={"Authorization": f"Bearer {TOKENS['bob']}"})
     assert resp.status_code == 409
 
 
 def test_claim_same_operator_is_idempotent(fresh_request):
     _, req_id = fresh_request
-    client.post(f"/queue/{req_id}/claim", headers={"X-Operator": "alice"})
-    resp = client.post(f"/queue/{req_id}/claim", headers={"X-Operator": "alice"})
+    client.post(f"/queue/{req_id}/claim", headers={"Authorization": f"Bearer {TOKENS['alice']}"})
+    resp = client.post(f"/queue/{req_id}/claim", headers={"Authorization": f"Bearer {TOKENS['alice']}"})
     assert resp.status_code == 200
 
 
-def test_claim_missing_operator_header_400(fresh_request):
+def test_claim_missing_bearer_token_401(fresh_request):
     _, req_id = fresh_request
     resp = client.post(f"/queue/{req_id}/claim")
-    assert resp.status_code == 400
+    assert resp.status_code == 401
+
+
+def test_claim_invalid_bearer_token_401(fresh_request):
+    _, req_id = fresh_request
+    resp = client.post(f"/queue/{req_id}/claim",
+                       headers={"Authorization": "Bearer not-a-real-token"})
+    assert resp.status_code == 401
 
 
 def test_claim_already_decided_409(fresh_request):
     _, req_id = fresh_request
-    client.post(f"/requests/{req_id}/reject", headers={"X-Operator": "alice"},
+    client.post(f"/requests/{req_id}/reject", headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                json={"reason": "spam"})
-    resp = client.post(f"/queue/{req_id}/claim", headers={"X-Operator": "bob"})
+    resp = client.post(f"/queue/{req_id}/claim", headers={"Authorization": f"Bearer {TOKENS['bob']}"})
     assert resp.status_code == 409
 
 
 def test_claim_missing_request_404():
-    resp = client.post("/queue/999999999/claim", headers={"X-Operator": "alice"})
+    resp = client.post("/queue/999999999/claim", headers={"Authorization": f"Bearer {TOKENS['alice']}"})
     assert resp.status_code == 404
 
 
@@ -177,7 +214,7 @@ def test_claim_missing_request_404():
 def test_accept_commits_order_with_price_snapshot(fresh_request):
     vm_id, req_id = fresh_request
     resp = client.post(f"/requests/{req_id}/accept",
-                       headers={"X-Operator": "alice"},
+                       headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                        json={"order_type": "SO",
                              "lines": [{"line_nb": 1, "item_nb": "A100",
                                        "qty": "2"}],
@@ -203,7 +240,7 @@ def test_accept_unresolved_line_422():
                    qty=None)])
     try:
         resp = client.post(f"/requests/{req_id}/accept",
-                           headers={"X-Operator": "alice"},
+                           headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                            json={"order_type": "SO", "lines": [],
                                  "removed_line_nbs": []})
         assert resp.status_code == 422
@@ -214,7 +251,7 @@ def test_accept_unresolved_line_422():
 def test_accept_already_committed_409(fresh_request):
     vm_id, req_id = fresh_request
     resp1 = client.post(f"/requests/{req_id}/accept",
-                        headers={"X-Operator": "alice"},
+                        headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                         json={"order_type": "SO",
                               "lines": [{"line_nb": 1, "item_nb": "A100",
                                         "qty": "2"}],
@@ -222,7 +259,7 @@ def test_accept_already_committed_409(fresh_request):
     order_nb = resp1.json()["order_nb"]
     try:
         resp2 = client.post(f"/requests/{req_id}/accept",
-                            headers={"X-Operator": "alice"},
+                            headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                             json={"order_type": "SO", "lines": [],
                                   "removed_line_nbs": []})
         assert resp2.status_code == 409
@@ -230,9 +267,38 @@ def test_accept_already_committed_409(fresh_request):
         _cleanup(req_id, vm_id, order_nb)
 
 
+def test_accept_denied_when_customer_does_not_exist():
+    # Database is the source of truth for customer identity: even if a
+    # PendingRequest somehow carries a cust_nb with no matching Customer
+    # row, committing it into an order must be refused - no operator
+    # action can override that.
+    vm_id, req_id = _make_request(cust_nb="ZNOPE_999999", lines=[
+        PendingLine(line_nb=1, raw_text="blue paint", item_nb="A100",
+                   item_desc="Blue Paint 5L", qty=Decimal("2"), uom="PCS",
+                   match_method="exact", match_confidence=1.0)])
+    try:
+        resp = client.post(f"/requests/{req_id}/accept",
+                           headers={"Authorization": f"Bearer {TOKENS['alice']}"},
+                           json={"order_type": "SO",
+                                 "lines": [{"line_nb": 1, "item_nb": "A100",
+                                           "qty": "2"}],
+                                 "removed_line_nbs": []})
+        assert resp.status_code == 404
+        s = SessionLocal()
+        try:
+            assert s.get(PendingRequest, req_id).status == "new"
+            leaked = s.scalars(select(OrderHeader).where(
+                OrderHeader.cust_nb == "ZNOPE_999999")).first()
+            assert leaked is None
+        finally:
+            s.close()
+    finally:
+        _cleanup(req_id, vm_id)
+
+
 def test_accept_missing_request_404():
     resp = client.post("/requests/999999999/accept",
-                       headers={"X-Operator": "alice"},
+                       headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                        json={"order_type": "SO", "lines": [],
                              "removed_line_nbs": []})
     assert resp.status_code == 404
@@ -243,7 +309,7 @@ def test_accept_missing_request_404():
 def test_reject_success(fresh_request):
     _, req_id = fresh_request
     resp = client.post(f"/requests/{req_id}/reject",
-                       headers={"X-Operator": "alice"},
+                       headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                        json={"reason": "duplicate", "note": "dup of #123"})
     assert resp.status_code == 200
     assert client.get(f"/queue/{req_id}").json()["status"] == "rejected"
@@ -251,10 +317,10 @@ def test_reject_success(fresh_request):
 
 def test_reject_already_decided_409(fresh_request):
     _, req_id = fresh_request
-    client.post(f"/requests/{req_id}/reject", headers={"X-Operator": "alice"},
+    client.post(f"/requests/{req_id}/reject", headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                json={"reason": "spam"})
     resp = client.post(f"/requests/{req_id}/reject",
-                       headers={"X-Operator": "alice"},
+                       headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                        json={"reason": "spam"})
     assert resp.status_code == 409
 
@@ -262,7 +328,7 @@ def test_reject_already_decided_409(fresh_request):
 def test_callback_success(fresh_request):
     _, req_id = fresh_request
     resp = client.post(f"/requests/{req_id}/callback",
-                       headers={"X-Operator": "alice"},
+                       headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                        json={"note": "call back after 5pm"})
     assert resp.status_code == 200
     assert client.get(f"/queue/{req_id}").json()["status"] == "callback"
@@ -270,10 +336,10 @@ def test_callback_success(fresh_request):
 
 def test_callback_already_decided_409(fresh_request):
     _, req_id = fresh_request
-    client.post(f"/requests/{req_id}/reject", headers={"X-Operator": "alice"},
+    client.post(f"/requests/{req_id}/reject", headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                json={"reason": "spam"})
     resp = client.post(f"/requests/{req_id}/callback",
-                       headers={"X-Operator": "alice"}, json={"note": "x"})
+                       headers={"Authorization": f"Bearer {TOKENS['alice']}"}, json={"note": "x"})
     assert resp.status_code == 409
 
 
@@ -307,7 +373,7 @@ def _activity_rows(request_id, event_type):
 def test_accept_commits_and_logs_order_committed(fresh_request):
     vm_id, req_id = fresh_request
     resp = client.post(f"/requests/{req_id}/accept",
-                       headers={"X-Operator": "alice"},
+                       headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                        json={"order_type": "SO",
                              "lines": [{"line_nb": 1, "item_nb": "A100",
                                        "qty": "2"}],
@@ -324,7 +390,7 @@ def test_accept_commits_and_logs_order_committed(fresh_request):
 def test_update_attempt_on_committed_request_rejected_and_logged(fresh_request):
     vm_id, req_id = fresh_request
     resp1 = client.post(f"/requests/{req_id}/accept",
-                        headers={"X-Operator": "alice"},
+                        headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                         json={"order_type": "SO",
                               "lines": [{"line_nb": 1, "item_nb": "A100",
                                         "qty": "2"}],
@@ -334,7 +400,7 @@ def test_update_attempt_on_committed_request_rejected_and_logged(fresh_request):
         # A second accept is the only "update a buffer row" entry point in
         # this API - it must be refused once the row left the buffer state.
         resp2 = client.post(f"/requests/{req_id}/accept",
-                            headers={"X-Operator": "alice"},
+                            headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                             json={"order_type": "SO",
                                   "lines": [{"line_nb": 1, "item_nb": "B200",
                                             "qty": "9"}],
@@ -358,10 +424,10 @@ def test_update_attempt_on_committed_request_rejected_and_logged(fresh_request):
 
 def test_update_attempt_on_rejected_request_refused_and_logged(fresh_request):
     _, req_id = fresh_request
-    client.post(f"/requests/{req_id}/reject", headers={"X-Operator": "alice"},
+    client.post(f"/requests/{req_id}/reject", headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                json={"reason": "spam"})
     resp = client.post(f"/requests/{req_id}/accept",
-                       headers={"X-Operator": "alice"},
+                       headers={"Authorization": f"Bearer {TOKENS['alice']}"},
                        json={"order_type": "SO", "lines": [],
                              "removed_line_nbs": []})
     assert resp.status_code == 409
@@ -369,10 +435,10 @@ def test_update_attempt_on_rejected_request_refused_and_logged(fresh_request):
     assert len(rows) == 1
 
 
-# ---- other intents never auto-commit (spec: invoice/cancel/other are ---
-# ---- always routed to manual review, never handled automatically) --------
+# ---- no intent auto-commits (spec: every intent is always routed to -----
+# ---- manual review, never handled automatically) -------------------------
 
-@pytest.mark.parametrize("intent", ["get_invoice", "cancel_order", "other"])
+@pytest.mark.parametrize("intent", ["return_order", "repeat_order", "other"])
 def test_non_bill_intents_stay_in_queue_uncommitted(intent):
     vm_id, req_id = _make_request(status="new")
     s = SessionLocal()
@@ -397,3 +463,165 @@ def test_non_bill_intents_stay_in_queue_uncommitted(intent):
             s.close()
     finally:
         _cleanup(req_id, vm_id)
+
+
+# ---- accepting with remember_alias=true teaches the resolver -------------
+
+def test_accept_with_remember_alias_creates_alias_usable_by_resolver():
+    vm_id, req_id = _make_request(lines=[
+        PendingLine(line_nb=1, raw_text="a very special widget",
+                   item_nb=None, qty=Decimal("1"), uom="PCS",
+                   candidates=[{"item_nb": "A101", "item_desc": "White Paint 5L",
+                               "category": "Paint", "score": 0.65,
+                               "method": "fuzzy"}])])
+    try:
+        resp = client.post(
+            f"/requests/{req_id}/accept", headers={"Authorization": f"Bearer {TOKENS['alice']}"},
+            json={"order_type": "SO",
+                 "lines": [{"line_nb": 1, "item_nb": "A100", "qty": "1",
+                           "remember_alias": True}],
+                 "removed_line_nbs": []})
+        assert resp.status_code == 200
+        order_nb = resp.json()["order_nb"]
+
+        from app.services.item_resolver import ItemResolver
+        s = SessionLocal()
+        try:
+            match, cands = ItemResolver(s).resolve("a very special widget")
+            assert match is not None
+            assert match.item_nb == "A100"
+            assert match.method == "alias"
+        finally:
+            s.close()
+    finally:
+        _cleanup(req_id, vm_id, order_nb)
+        s = SessionLocal()
+        try:
+            s.execute(ItemAlias.__table__.delete().where(
+                ItemAlias.normalized_alias == "a very special widget"))
+            s.commit()
+        finally:
+            s.close()
+
+
+def test_accept_without_remember_alias_does_not_write_alias():
+    vm_id, req_id = _make_request(lines=[
+        PendingLine(line_nb=1, raw_text="another special gadget",
+                   item_nb=None, qty=Decimal("1"), uom="PCS",
+                   candidates=[{"item_nb": "A101", "item_desc": "White Paint 5L",
+                               "category": "Paint", "score": 0.65,
+                               "method": "fuzzy"}])])
+    try:
+        resp = client.post(
+            f"/requests/{req_id}/accept", headers={"Authorization": f"Bearer {TOKENS['alice']}"},
+            json={"order_type": "SO",
+                 "lines": [{"line_nb": 1, "item_nb": "A100", "qty": "1"}],
+                 "removed_line_nbs": []})
+        assert resp.status_code == 200
+        order_nb = resp.json()["order_nb"]
+
+        s = SessionLocal()
+        try:
+            rows = s.execute(select(ItemAlias).where(
+                ItemAlias.normalized_alias == "another special gadget")).all()
+            assert rows == []
+        finally:
+            s.close()
+    finally:
+        _cleanup(req_id, vm_id, order_nb)
+
+
+# ---- pipeline failure attribution: TranscriptionFailed
+
+def _make_voice_only(phone="+9613123456"):
+    s = SessionLocal()
+    try:
+        vm = VoiceMessage(phone_raw="03123456", phone_e164=phone,
+                          audio_path="2026/08/10/doesnotexist.wav",
+                          status="received")
+        s.add(vm)
+        s.commit()
+        return vm.id
+    finally:
+        s.close()
+
+
+def _cleanup_voice_only(vm_id):
+    s = SessionLocal()
+    try:
+        vm = s.get(VoiceMessage, vm_id)
+        if vm:
+            s.delete(vm)
+        s.commit()
+    finally:
+        s.close()
+
+
+class _RaisingSTT:
+    def transcribe(self, audio_path, duration=None):
+        raise RuntimeError("network blip")
+
+
+class _FailIfCalledSTT:
+    def transcribe(self, audio_path, duration=None):
+        raise AssertionError(
+            "stt.transcribe must not be called for a client_whisper voice "
+            "message - its transcript is already final")
+
+
+def test_client_whisper_transcript_skips_server_stt(monkeypatch):
+    import app.pipeline as pipeline_module
+    from app.services.audio_store import AudioStore
+
+    monkeypatch.setattr(pipeline_module, "duration_seconds", lambda p: 3.0)
+    s = SessionLocal()
+    try:
+        vm = VoiceMessage(phone_raw="03123456", phone_e164="+9613123456",
+                          audio_path="2026/08/10/doesnotexist.wav",
+                          status="received", transcript="place order test",
+                          transcript_source="client_whisper", language="en")
+        s.add(vm)
+        s.commit()
+        vm_id = vm.id
+    finally:
+        s.close()
+    try:
+        pipeline = pipeline_module.IntakePipeline(_FailIfCalledSTT(), AudioStore())
+        pipeline.process(vm_id)
+        s = SessionLocal()
+        try:
+            row = s.get(VoiceMessage, vm_id)
+            assert row.transcript == "place order test"
+            assert row.status == "drafted"
+            assert row.transcript_conf == 1.0
+        finally:
+            s.close()
+    finally:
+        s = SessionLocal()
+        try:
+            req = s.scalars(select(PendingRequest).where(
+                PendingRequest.voice_message_id == vm_id)).first()
+            if req:
+                s.delete(req)
+                s.commit()
+        finally:
+            s.close()
+        _cleanup_voice_only(vm_id)
+
+
+def test_transcription_failure_is_wrapped_as_transcription_failed(monkeypatch):
+    import app.pipeline as pipeline_module
+    from app.errors import TranscriptionFailed
+    from app.services.audio_store import AudioStore
+
+    monkeypatch.setattr(pipeline_module, "duration_seconds", lambda p: 3.0)
+    vm_id = _make_voice_only()
+    try:
+        pipeline = pipeline_module.IntakePipeline(_RaisingSTT(), AudioStore())
+        try:
+            pipeline.process(vm_id)
+            assert False, "expected TranscriptionFailed"
+        except TranscriptionFailed as e:
+            assert "network blip" in str(e)
+    finally:
+        _cleanup_voice_only(vm_id)

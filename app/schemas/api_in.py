@@ -9,6 +9,11 @@ class LineEditIn(BaseModel):
     item_desc: str | None = None
     qty: Decimal | None = None
     uom: str | None = None
+    # When true and item_nb differs from what the resolver originally
+    # suggested, the correction is saved as a new item_alias row (source
+    # "human_correction") so the same spoken phrase resolves correctly next
+    # time. See app/services/alias_learning.py.
+    remember_alias: bool = False
 
 
 class AcceptIn(BaseModel):
@@ -28,9 +33,3 @@ class RejectIn(BaseModel):
 
 class CallbackIn(BaseModel):
     note: str | None = None
-
-
-class BillRequestIn(BaseModel):
-    cust_nb: str
-    order_nb: str
-    order_type: str = "SO"
