@@ -569,6 +569,17 @@ class _FailIfCalledSTT:
             "message - its transcript is already final")
 
 
+class _NoOpCommandExtractor:
+    """Neither test below cares what command extraction returns - one only
+    checks that stt.transcribe is skipped, the other never reaches
+    extraction at all (stt raises first)."""
+
+    def extract(self, transcript):
+        from app.services.scripted.models import ParseError, ParseFailure
+        return ParseFailure(ParseError.COMMAND_START_NOT_FOUND, "stub",
+                            transcript)
+
+
 def test_client_whisper_transcript_skips_server_stt(monkeypatch):
     import app.pipeline as pipeline_module
     from app.services.audio_store import AudioStore
@@ -586,7 +597,8 @@ def test_client_whisper_transcript_skips_server_stt(monkeypatch):
     finally:
         s.close()
     try:
-        pipeline = pipeline_module.IntakePipeline(_FailIfCalledSTT(), AudioStore())
+        pipeline = pipeline_module.IntakePipeline(
+            _FailIfCalledSTT(), AudioStore(), _NoOpCommandExtractor())
         pipeline.process(vm_id)
         s = SessionLocal()
         try:
@@ -617,7 +629,8 @@ def test_transcription_failure_is_wrapped_as_transcription_failed(monkeypatch):
     monkeypatch.setattr(pipeline_module, "duration_seconds", lambda p: 3.0)
     vm_id = _make_voice_only()
     try:
-        pipeline = pipeline_module.IntakePipeline(_RaisingSTT(), AudioStore())
+        pipeline = pipeline_module.IntakePipeline(
+            _RaisingSTT(), AudioStore(), _NoOpCommandExtractor())
         try:
             pipeline.process(vm_id)
             assert False, "expected TranscriptionFailed"

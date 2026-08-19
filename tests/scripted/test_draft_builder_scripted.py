@@ -5,7 +5,8 @@ from app.schemas.enums import Intent
 from app.services.catalogue import CatalogueService
 from app.services.draft_builder import DraftBuilder
 from app.services.prior_order import PriorOrderService
-from app.services.scripted.command_parser import parse
+from app.services.scripted.models import (ParsedItemSpan, ParsedPlaceOrder,
+                                          ParsedReorder, ParsedReturnOrder)
 from app.services.scripted.resolve_order import resolve
 
 
@@ -32,7 +33,10 @@ def test_build_scripted_order_creates_pending_request(db_session):
     text = ("place order for Zzdraft Trading items zzdraft widget med "
            "5x2 quantity four cartons the end")
     voice = _voice(db_session, text)
-    result = resolve(db_session, parse(text))
+    parsed = ParsedPlaceOrder(customer_text="Zzdraft Trading", items=[
+        ParsedItemSpan(item_text="zzdraft widget med 5x2",
+                       quantity_text="four", uom_text="cartons")])
+    result = resolve(db_session, parsed)
     req = _builder(db_session).build_scripted_order(voice, result)
 
     assert req.cust_nb == "ZZDB1"
@@ -56,7 +60,8 @@ def test_build_return_full_copies_prior_lines(db_session):
 
     text = "return order ZZ990001 the end"
     voice = _voice(db_session, text)
-    result = resolve(db_session, parse(text))
+    parsed = ParsedReturnOrder(order_reference="ZZ990001", items=[])
+    result = resolve(db_session, parsed)
     prior = PriorOrderService(db_session)
     header = prior.find_by_order_nb(result.order_reference)
     req = _builder(db_session).build_return(voice, header, result)
@@ -72,7 +77,8 @@ def test_build_return_full_copies_prior_lines(db_session):
 def test_build_return_unresolvable_reference_flags_not_found(db_session):
     text = "return order 00000000000000 the end"
     voice = _voice(db_session, text)
-    result = resolve(db_session, parse(text))
+    parsed = ParsedReturnOrder(order_reference="00000000000000", items=[])
+    result = resolve(db_session, parsed)
     req = _builder(db_session).build_return(voice, None, result)
 
     assert req.cust_nb is None
@@ -94,7 +100,10 @@ def test_build_return_partial_keeps_item_actually_on_order(db_session):
     text = ("return order ZZ990004 items zzscope widget alpha quantity 1 "
            "the end")
     voice = _voice(db_session, text)
-    result = resolve(db_session, parse(text))
+    parsed = ParsedReturnOrder(order_reference="ZZ990004", items=[
+        ParsedItemSpan(item_text="zzscope widget alpha",
+                       quantity_text="1", uom_text="")])
+    result = resolve(db_session, parsed)
     prior = PriorOrderService(db_session)
     header = prior.find_by_order_nb(result.order_reference)
     req = _builder(db_session).build_return(voice, header, result)
@@ -123,7 +132,10 @@ def test_build_return_partial_rejects_item_not_on_order(db_session):
     text = ("return order ZZ990003 items zzpartial widget beta quantity 1 "
            "the end")
     voice = _voice(db_session, text)
-    result = resolve(db_session, parse(text))
+    parsed = ParsedReturnOrder(order_reference="ZZ990003", items=[
+        ParsedItemSpan(item_text="zzpartial widget beta",
+                       quantity_text="1", uom_text="")])
+    result = resolve(db_session, parsed)
     prior = PriorOrderService(db_session)
     header = prior.find_by_order_nb(result.order_reference)
     req = _builder(db_session).build_return(voice, header, result)
@@ -148,7 +160,9 @@ def test_build_reorder_last_time_resolves_target(db_session):
 
     text = "reorder for Zzreorder Trading same order last time the end"
     voice = _voice(db_session, text)
-    result = resolve(db_session, parse(text))
+    parsed = ParsedReorder(customer_text="Zzreorder Trading", mode="last",
+                           reference=None)
+    result = resolve(db_session, parsed)
     req = _builder(db_session).build_reorder(voice, result)
 
     assert req.primary_intent == Intent.repeat_order.value

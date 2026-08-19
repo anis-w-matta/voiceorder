@@ -2,11 +2,18 @@
 sections 31-34).
 
 Runnable directly against a live catalog/customer DB (e.g. the real
-imported Product.xlsm data) by calling `evaluate(session, CASES)`, or
-self-contained via `run_self_contained()`, which seeds a small synthetic
-catalog covering every required category (spec section 32 A-J) - including
-duplicate descriptions and near-confusable items - so the suite (and CI)
-can run without the real catalog file present.
+imported Product.xlsm data) by calling `evaluate(session, CASES, parse_fn)`,
+or self-contained via `run_self_contained(parse_fn)`, which seeds a small
+synthetic catalog covering every required category (spec section 32 A-J) -
+including duplicate descriptions and near-confusable items - so the suite
+(and CI) can run without the real catalog file present.
+
+`parse_fn` is any `str -> ParsedPlaceOrder | ParsedReturnOrder |
+ParsedReorder | ParseFailure` callable (app/services/scripted/models.py) -
+originally the deterministic anchor-phrase grammar's `parse()`, now
+`GeminiCommandExtractor().extract` (app/services/gemini_command_extractor.py).
+Passed explicitly rather than defaulted, so this harness can score whatever
+extraction implementation is being evaluated without hardcoding one.
 
 This intentionally measures the whole pipeline end-to-end (parser +
 customer + item + qty/uom), not just item matching, because a parser
@@ -17,13 +24,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
 from app.models import Customer, Item, ItemAlias
-from app.services.scripted.command_parser import parse
-from app.services.scripted.models import MatchStatus, ParseFailure
+from app.services.scripted.models import (MatchStatus, ParsedCommand,
+                                          ParseFailure)
 from app.services.scripted.resolve_order import resolve
+
+ParseFn = Callable[[str], "ParsedCommand | ParseFailure"]
 
 
 @dataclass
@@ -152,8 +162,9 @@ CASES: list[EvaluationCase] = [
 ]
 
 
-def _run_case(session: Session, case: EvaluationCase) -> CaseResult:
-    parsed = parse(case.transcript)
+def _run_case(session: Session, case: EvaluationCase,
+              parse_fn: ParseFn) -> CaseResult:
+    parsed = parse_fn(case.transcript)
     parser_ok = not isinstance(parsed, ParseFailure)
     if not parser_ok:
         status_ok = case.expected_status == "parse_error"
@@ -185,11 +196,12 @@ def _run_case(session: Session, case: EvaluationCase) -> CaseResult:
     return CaseResult(case, True, customer_ok, item_ok, status_ok)
 
 
-def evaluate(session: Session, cases: list[EvaluationCase]) -> dict:
+def evaluate(session: Session, cases: list[EvaluationCase],
+             parse_fn: ParseFn) -> dict:
     """Run every case, return per-category and aggregate metrics (spec
     section 33): parser success rate, customer top-1 accuracy, item
     top-1/ambiguity-detection accuracy, overall pass rate."""
-    results = [_run_case(session, c) for c in cases]
+    results = [_run_case(session, c, parse_fn) for c in cases]
     n = len(results) or 1
 
     def rate(pred) -> float:
@@ -219,6 +231,7 @@ def evaluate(session: Session, cases: list[EvaluationCase]) -> dict:
 
 
 def sweep_thresholds(session: Session, cases: list[EvaluationCase],
+                     parse_fn: ParseFn,
                      thresholds: list[float] = (65, 70, 75, 80, 85, 90)
                      ) -> dict[float, dict]:
     """Spec section 34: measure item-match accuracy at each candidate
@@ -235,7 +248,7 @@ def sweep_thresholds(session: Session, cases: list[EvaluationCase],
         for case in cases:
             for expected in case.expected_items:
                 total += 1
-                parsed = parse(case.transcript)
+                parsed = parse_fn(case.transcript)
                 if isinstance(parsed, ParseFailure):
                     continue
                 item_texts = [i.item_text for i in getattr(parsed, "items", [])]
@@ -262,7 +275,7 @@ def sweep_thresholds(session: Session, cases: list[EvaluationCase],
     return out
 
 
-def run_self_contained() -> dict:
+def run_self_contained(parse_fn: ParseFn) -> dict:
     """Entry point for `python -m app.services.scripted.evaluate` - seeds
     the synthetic catalog above into the test schema and runs CASES,
     printing the report. Never touches dev/prod data (uses the same
@@ -276,7 +289,7 @@ def run_self_contained() -> dict:
     s = SessionLocal()
     try:
         _seed_evaluation_catalog(s)
-        report = evaluate(s, CASES)
+        report = evaluate(s, CASES, parse_fn)
     finally:
         s.rollback()  # evaluation data is never persisted
         s.close()
@@ -285,4 +298,8 @@ def run_self_contained() -> dict:
 
 if __name__ == "__main__":
     import json
-    print(json.dumps(run_self_contained(), indent=2))
+
+    from app.services.gemini_command_extractor import GeminiCommandExtractor
+
+    print(json.dumps(run_self_contained(GeminiCommandExtractor().extract),
+                     indent=2))

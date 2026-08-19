@@ -10,6 +10,7 @@ from app.models import VoiceMessage
 from app.pipeline import IntakePipeline
 from app.services.activity_log import log as log_activity
 from app.services.audio_store import AudioStore
+from app.services.gemini_command_extractor import GeminiCommandExtractor
 from app.services.gemini_transcriber import GeminiTranscriber
 
 # Windows consoles/log redirection default to the legacy cp1252 codepage.
@@ -77,7 +78,8 @@ class Worker:
 
 def main():
     stt = GeminiTranscriber()
-    w = Worker(IntakePipeline(stt, AudioStore()))
+    command_extractor = GeminiCommandExtractor()
+    w = Worker(IntakePipeline(stt, AudioStore(), command_extractor))
     signal.signal(signal.SIGINT, w.stop)
     signal.signal(signal.SIGTERM, w.stop)
     w.run()

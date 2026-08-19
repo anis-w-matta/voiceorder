@@ -6,6 +6,8 @@ from app.pipeline import IntakePipeline
 from app.schemas.enums import Intent
 from app.services.audio_store import AudioStore
 from app.schemas.transcript import Transcript
+from app.services.scripted.models import (ParsedItemSpan, ParsedPlaceOrder,
+                                          ParseError, ParseFailure)
 
 
 class _ScriptedSTT:
@@ -15,6 +17,19 @@ class _ScriptedSTT:
     def transcribe(self, audio_path, duration=None):
         return Transcript(text=self._text, language="en", languages=["en"],
                           duration=3.0, confidence=0.9)
+
+
+class _StubCommandExtractor:
+    """Stands in for Gemini command extraction with a fixed result, so
+    pipeline tests stay fast/offline/deterministic - mirrors what the
+    (now-removed) anchor-phrase grammar used to extract from the same
+    canned transcript."""
+
+    def __init__(self, parsed):
+        self._parsed = parsed
+
+    def extract(self, transcript):
+        return self._parsed
 
 
 def _make_voice(session, text):
@@ -45,7 +60,11 @@ def test_place_order_transcript_routes_through_scripted_pipeline(
     db_session.commit()
 
     try:
-        pipeline = IntakePipeline(_ScriptedSTT(text), AudioStore())
+        parsed = ParsedPlaceOrder(customer_text="Zzpipeline Trading", items=[
+            ParsedItemSpan(item_text="zzpipeline widget med 5x2",
+                           quantity_text="two", uom_text="cartons")])
+        pipeline = IntakePipeline(_ScriptedSTT(text), AudioStore(),
+                                  _StubCommandExtractor(parsed))
         pipeline.process(vid)
 
         s = SessionLocal()
@@ -87,7 +106,10 @@ def test_non_scripted_transcript_is_flagged_for_manual_review(
     db_session.commit()
 
     try:
-        pipeline = IntakePipeline(_ScriptedSTT("hello how are you"), AudioStore())
+        parsed = ParseFailure(ParseError.COMMAND_START_NOT_FOUND,
+                              "no command found", "hello how are you")
+        pipeline = IntakePipeline(_ScriptedSTT("hello how are you"),
+                                  AudioStore(), _StubCommandExtractor(parsed))
         pipeline.process(vid)
 
         s = SessionLocal()

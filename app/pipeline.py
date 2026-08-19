@@ -13,14 +13,15 @@ from app.services.catalogue import CatalogueService
 from app.services.draft_builder import DraftBuilder
 from app.services.normalization import normalize_text
 from app.services.prior_order import PriorOrderService
-from app.services.scripted import command_parser, resolve_order
+from app.services.scripted import resolve_order
 from app.services.scripted.models import ParseFailure
 
 
 class IntakePipeline:
-    def __init__(self, stt, audio):
+    def __init__(self, stt, audio, command_extractor):
         self.stt = stt
         self.audio = audio
+        self.command_extractor = command_extractor
 
     def process(self, voice_message_id: int) -> None:
         with session_scope() as s:
@@ -91,7 +92,7 @@ class IntakePipeline:
             prior = PriorOrderService(s)
             builder = DraftBuilder(s, prior, CatalogueService(s))
 
-            parsed = command_parser.parse(tr.text)
+            parsed = self.command_extractor.extract(tr.text)
             if not isinstance(parsed, ParseFailure):
                 result = resolve_order.resolve(s, parsed)
                 if result.command_type == "place_order":

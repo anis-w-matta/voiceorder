@@ -56,11 +56,13 @@ class Settings(BaseSettings):
     transcript_disagreement_token_overlap_min: float = 0.5
 
     # Worker-level rate limiting for Gemini API calls, shared across the
-    # transcriber and classifier - see app/services/rate_limiter.py.
-    # Conservative defaults so the worker never runs at 100% of the
-    # free-tier quota; the account's actual current limit should be
-    # checked in AI Studio and this raised only if it's genuinely higher.
-    gemini_rpm_limit: int = 10
+    # transcriber and the command extractor (gemini_command_extractor.py) -
+    # see app/services/rate_limiter.py. Every voice message now makes two
+    # Gemini calls (transcription preview + command extraction) instead of
+    # one, so this was raised from 10 - re-check against the account's
+    # actual current limit in AI Studio and adjust if it's genuinely lower
+    # or higher.
+    gemini_rpm_limit: int = 20
     gemini_max_concurrent: int = 1
     # 0.0-1.0 scale - GeminiTranscriber reports its own self-rated
     # confidence per transcript (see PROMPT in gemini_transcriber.py); this
@@ -89,14 +91,6 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 20160  # 14 days - mobile sessions stay signed in
 
     product_catalog_path: str = "Product.xlsm"
-    # Editable JSON file of the scripted-command anchor phrases (place/
-    # return/reorder grammar) - see app/services/scripted/config.py. Add a
-    # phrasing/language variant by editing this file and restarting; no
-    # code change needed.
-    anchor_phrases_path: str = "app/services/scripted/anchor_phrases.json"
-    # rapidfuzz score (0-100) a command/customer/items/end anchor phrase
-    # must clear to count as "found" - see command_parser.py.
-    fuzzy_delimiter_threshold: float = 70.0
     # rapidfuzz score (0-100) a customer name/number must clear to be
     # returned as matched (below this: not_found) - see match_customer.py.
     customer_match_threshold: float = 75.0

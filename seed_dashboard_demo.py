@@ -2,13 +2,14 @@
 of scripted-command demo requests, so the Queue tab has something to look
 at without waiting for real salesman calls.
 
-Unlike the old (deleted) version of this script, every request here is
-produced by actually running IntakePipeline.process() against a scripted
-transcript (place_order / return_order / reorder) - the same code path a
-real voice call goes through, just with a canned transcript standing in
-for Gemini transcription. This exercises the real command_parser ->
-resolve_order -> DraftBuilder pipeline end to end, not a hand-built
-PendingRequest.
+Every request here is produced by actually running IntakePipeline.process()
+against a scripted transcript (place_order / return_order / reorder) - the
+same code path a real voice call goes through, with a canned transcript
+standing in for Gemini transcription (zero-cost, deterministic) but real
+Gemini command classification/extraction (GeminiCommandExtractor) - this
+script makes live Gemini API calls, one per scenario below. This exercises
+the real GeminiCommandExtractor -> resolve_order -> DraftBuilder pipeline
+end to end, not a hand-built PendingRequest.
 
 Run against the same DATABASE_URL the app uses:
 
@@ -28,6 +29,7 @@ from app.schemas.enums import RequestStatus
 from app.schemas.transcript import Transcript
 from app.services.audio_store import AudioStore
 from app.services.commit import OrderCommitService
+from app.services.gemini_command_extractor import GeminiCommandExtractor
 from app.services.numbering import OrderNumberService
 
 # duration_seconds() would otherwise try to actually decode the (silent
@@ -37,6 +39,7 @@ from app.services.numbering import OrderNumberService
 pipeline_module.duration_seconds = lambda path: 4.0
 
 _AUDIO_STORE = AudioStore()
+_COMMAND_EXTRACTOR = GeminiCommandExtractor()
 
 CUST_NB = "C001"  # "Test Trading" - seeded by seed.py/seed_test.py
 
@@ -81,7 +84,8 @@ def _ingest(text: str, language: str = "en") -> int:
         s.flush()
         vid = vm.id
 
-    IntakePipeline(_CannedSTT(text, language), _AUDIO_STORE).process(vid)
+    IntakePipeline(_CannedSTT(text, language), _AUDIO_STORE,
+                  _COMMAND_EXTRACTOR).process(vid)
     return vid
 
 
