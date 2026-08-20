@@ -5,6 +5,7 @@ __pycache__/
 *.wav
 *.m4a
 *.log
+logs/transcripts.txt
 .pytest_cache/
 # Voice recordings - real customer audio, never belongs in version control.
 audio/

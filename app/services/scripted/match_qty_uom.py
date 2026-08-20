@@ -1,5 +1,5 @@
-"""Deterministic quantity/UOM resolution for a command_parser.py
-ParsedItemSpan's quantity_text/uom_text. No LLM involved anywhere in this
+"""Deterministic quantity/UOM resolution for a ParsedItemSpan's
+quantity_text/uom_text. No LLM involved anywhere in this
 module (spec section 17) - a number is either recognizable or it isn't.
 """
 from decimal import Decimal, InvalidOperation

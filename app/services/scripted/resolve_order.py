@@ -1,6 +1,7 @@
-"""Orchestrator: a command_parser.py ParsedCommand -> a ScriptedOrderResult
-(spec section 27). Wires together match_customer/match_qty_uom/match_item
-for each slot the grammar produced. Never returns "success" on a partially
+"""Orchestrator: a ParsedCommand (from GeminiCommandExtractor) -> a
+ScriptedOrderResult (spec section 27). Wires together
+match_customer/match_qty_uom/match_item for each slot the extractor
+produced. Never returns "success" on a partially
 resolved order (spec: "customer matched, item1 matched, item2 ambiguous"
 must be needs_confirmation, not success).
 

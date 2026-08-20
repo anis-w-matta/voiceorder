@@ -1,4 +1,8 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
@@ -9,7 +13,7 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.1-flash-lite"
 
-    audio_dir: str = "C:/voiceorder/audio"
+    audio_dir: str = str(_REPO_ROOT / "audio")
     default_phone_region: str = "LB"
     expected_languages: list[str] = ["en", "ar"]
     # IANA zone used to resolve a spoken calendar-day reference ("the order

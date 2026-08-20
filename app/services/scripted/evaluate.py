@@ -22,6 +22,20 @@ as a bad item match.
 """
 from __future__ import annotations
 
+import os
+
+# Must run before any `app.*` import below - app.config's module-level
+# `settings` singleton (and app.db's module-level engine) read DATABASE_URL
+# once, at import time. Setting it here (not inside run_self_contained)
+# is what actually makes this take effect; see tests/conftest.py for the
+# same pattern. setdefault (not direct assignment) so a real DATABASE_URL
+# already in the environment - e.g. for running evaluate() against a live
+# catalog - is not clobbered.
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+psycopg://voiceorder:changeme@localhost/voiceorder"
+    "?options=-c%20search_path%3Dvoiceorder_test%2Cpublic")
+
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable
@@ -280,11 +294,6 @@ def run_self_contained(parse_fn: ParseFn) -> dict:
     the synthetic catalog above into the test schema and runs CASES,
     printing the report. Never touches dev/prod data (uses the same
     voiceorder_test schema convention as the rest of the suite)."""
-    import os
-    os.environ.setdefault(
-        "DATABASE_URL",
-        "postgresql+psycopg://voiceorder:changeme@localhost/voiceorder"
-        "?options=-c%20search_path%3Dvoiceorder_test%2Cpublic")
     from app.db import SessionLocal
     s = SessionLocal()
     try:

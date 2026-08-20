@@ -41,7 +41,7 @@ pipeline_module.duration_seconds = lambda path: 4.0
 _AUDIO_STORE = AudioStore()
 _COMMAND_EXTRACTOR = GeminiCommandExtractor()
 
-CUST_NB = "C001"  # "Test Trading" - seeded by seed.py/seed_test.py
+CUST_NB = "C001"  # "Test Trading" - seeded by seed_test.py
 
 
 def _placeholder_wav_bytes() -> bytes:
