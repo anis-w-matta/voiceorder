@@ -99,7 +99,7 @@ class IntakePipeline:
                     builder.build_scripted_order(voice, result)
                 elif result.command_type == "return_order":
                     order_header = (
-                        prior.find_by_order_nb(result.order_reference)
+                        prior.find_so_by_order_nb(result.order_reference)
                         if result.order_reference else None)
                     builder.build_return(voice, order_header, result)
                 else:  # reorder

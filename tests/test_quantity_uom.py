@@ -3,17 +3,17 @@ from decimal import Decimal
 from app.services.quantity_uom import parse_quantity_uom
 
 
-def test_100_meters_dumped_into_uom_is_recovered():
-    parsed = parse_quantity_uom(None, "100 meters", "bade 100 meter cable")
+def test_100_packets_dumped_into_uom_is_recovered():
+    parsed = parse_quantity_uom(None, "100 packets", "bade 100 packets cable")
     assert parsed.qty == Decimal("100")
-    assert parsed.uom == "MTR"
+    assert parsed.uom == "PKT"
     assert parsed.ok is True
 
 
 def test_clean_qty_and_uom_pass_through_canonicalized():
-    parsed = parse_quantity_uom(3, "carton", "baddi 3 cartons")
+    parsed = parse_quantity_uom(3, "packet", "baddi 3 packets")
     assert parsed.qty == Decimal("3")
-    assert parsed.uom == "CTN"
+    assert parsed.uom == "PKT"
     assert parsed.ok is True
 
 
@@ -37,9 +37,9 @@ def test_bare_unrecognized_unit_with_no_number_is_not_recoverable():
     assert parsed.qty is None
 
 
-def test_arabizi_uom_3ilbe_and_kartouna_recognized():
-    assert parse_quantity_uom(2, "3ilbe", "").uom == "BOX"
-    assert parse_quantity_uom(4, "kartouna", "").uom == "CTN"
+def test_uom_abbreviations_recognized():
+    assert parse_quantity_uom(2, "ea", "").uom == "EACH"
+    assert parse_quantity_uom(4, "pkt", "").uom == "PKT"
 
 
 def test_no_qty_and_no_uom_is_a_clean_noop():
@@ -51,13 +51,10 @@ def test_no_qty_and_no_uom_is_a_clean_noop():
 
 # ---- QA regressions found via the adversarial stress-test suite ----------
 
-def test_sqft_is_a_recognized_unit():
-    # Real catalogue vocabulary (25/37.5/75/100 SQFT aluminum foil packs) -
-    # was previously not in UOM_SYNONYMS at all, silently discarding the
-    # quantity whenever the unit word was unrecognized (see next test).
-    parsed = parse_quantity_uom(None, "25 sqft", "aluminum 25 sqft")
+def test_each_is_a_recognized_unit():
+    parsed = parse_quantity_uom(None, "25 each", "salted nuts 25 each")
     assert parsed.qty == Decimal("25")
-    assert parsed.uom == "SQFT"
+    assert parsed.uom == "EACH"
     assert parsed.ok is True
 
 
@@ -68,13 +65,17 @@ def test_unrecognized_unit_word_does_not_discard_a_clearly_found_quantity():
     assert parsed.ok is True
 
 
-def test_arabizi_whole_word_unit_not_misparsed_as_number_plus_unit():
-    # "3ilbe" is a single Arabizi word (box) - the "3" must not be
-    # misinterpreted as a spoken quantity of 3.
+def test_fused_digit_letter_word_is_not_misparsed_as_number_plus_unit():
+    # "3ilbe" is a single Arabizi word using a digit as a consonant
+    # substitution (3=ع), not a real UOM this business recognizes - the
+    # leading "3" must not be misread as a spoken quantity of 3 just
+    # because it happens to look like "<number><word>". Since it's also
+    # not a recognized unit on its own, the correct outcome is "not
+    # recoverable", not a wrong qty=3 guess.
     parsed = parse_quantity_uom(None, "3ilbe", "bade 3ilbe")
     assert parsed.qty is None
-    assert parsed.uom == "BOX"
-    assert parsed.ok is True
+    assert parsed.uom == "3ilbe"
+    assert parsed.ok is False
 
 
 def test_quantity_contradicting_spoken_text_is_not_silently_trusted():

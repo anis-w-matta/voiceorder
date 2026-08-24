@@ -19,7 +19,7 @@ from app.services.scripted.match_qty_uom import parse_quantity_uom_span
 from app.services.scripted.models import (MatchStatus, ParsedItemSpan,
                                           ParsedPlaceOrder, ParsedReorder,
                                           ParsedReturnOrder, ParseFailure,
-                                          ResolvedOrderLine,
+                                          QuantityUOM, ResolvedOrderLine,
                                           ScriptedOrderResult)
 
 
@@ -31,7 +31,48 @@ def _resolve_lines(session: Session, items: list[ParsedItemSpan]
         match = resolve_item(session, item.item_text)
         lines.append(ResolvedOrderLine(raw_item_text=item.item_text,
                                        qty=qty, match=match))
-    return lines
+    return _merge_duplicate_lines(lines)
+
+
+def _merge_duplicate_lines(lines: list[ResolvedOrderLine]
+                           ) -> list[ResolvedOrderLine]:
+    """Sums repeated mentions of the same item into one line - "1 tendrex
+    adult large 12x4 ... 3 tendrex adult large 12x4" is one order for 4, not
+    two separate lines a reviewer has to notice and reconcile by hand
+    (spec: a spoken order is what the customer wants, not a transcript of
+    how they happened to phrase it).
+
+    Only merges lines that resolved cleanly to the *same* item AND share a
+    UOM - a matched item with an unmatched/ambiguous twin, or the same item
+    quoted in two different units, still needs a human to reconcile it
+    rather than have this guess which quantity is real or silently sum
+    incompatible units.
+    """
+    merged: list[ResolvedOrderLine] = []
+    index_by_key: dict[tuple[str, str], int] = {}
+    for line in lines:
+        mergeable = (line.match.status == MatchStatus.MATCHED and
+                    line.match.item_number is not None and
+                    line.qty.status == "matched" and
+                    line.qty.quantity is not None)
+        key = ((line.match.item_number or ""),
+              (line.qty.uom or "").strip().upper()) if mergeable else None
+        existing_idx = index_by_key.get(key) if key else None
+        if existing_idx is None:
+            merged.append(line)
+            if key:
+                index_by_key[key] = len(merged) - 1
+            continue
+        existing = merged[existing_idx]
+        merged[existing_idx] = ResolvedOrderLine(
+            raw_item_text=f"{existing.raw_item_text}; {line.raw_item_text}",
+            qty=QuantityUOM(
+                quantity=existing.qty.quantity + line.qty.quantity,
+                uom=existing.qty.uom,
+                raw_text=f"{existing.qty.raw_text}; {line.qty.raw_text}",
+                status="matched"),
+            match=existing.match)
+    return merged
 
 
 def _lines_all_clean(lines: list[ResolvedOrderLine]) -> bool:
@@ -69,10 +110,13 @@ def resolve_return_order(session: Session, parsed: ParsedReturnOrder
 def resolve_reorder(session: Session, parsed: ParsedReorder
                     ) -> ScriptedOrderResult:
     customer = match_customer(session, parsed.customer_text)
-    success = customer.status == MatchStatus.MATCHED
+    lines = _resolve_lines(session, parsed.items)
+    # _lines_all_clean([]) is vacuously True, so a plain (unadjusted)
+    # reorder's success still hinges on the customer alone.
+    success = customer.status == MatchStatus.MATCHED and _lines_all_clean(lines)
     return ScriptedOrderResult(
         status="success" if success else "needs_confirmation",
-        command_type="reorder", customer=customer,
+        command_type="reorder", customer=customer, lines=lines,
         order_reference=parsed.reference, reorder_mode=parsed.mode)
 
 

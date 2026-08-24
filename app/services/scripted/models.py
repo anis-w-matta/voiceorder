@@ -70,6 +70,9 @@ class ParsedReorder:
     # the salesman states one of the three explicitly (spec: "3 enums").
     mode: Literal["last", "date", "order_nb"] = "last"
     reference: str | None = None  # date text or order number, per mode
+    # A reorder can also change the order while repeating it ("reorder the
+    # same thing but 4 each of X instead") - empty means a plain repeat.
+    items: list[ParsedItemSpan] = field(default_factory=list)
 
 
 ParsedCommand = ParsedPlaceOrder | ParsedReturnOrder | ParsedReorder

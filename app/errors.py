@@ -63,3 +63,19 @@ class CustomerNotFound(VoiceOrderError):
         super().__init__(f"No customer {cust_nb!r}")
 
 
+class TargetOrderNotFound(VoiceOrderError):
+    """A return named an order number that isn't a real sales order.
+
+    Guards the RETURN branch of OrderCommitService.commit(): the customer
+    for a return is pulled from the order it's returning (never picked
+    independently - see AcceptIn.target_order_nb), so an order number that
+    doesn't resolve to a real SO must stop the commit rather than leave
+    cust_nb unset or, worse, silently keep whatever stale value the request
+    already had.
+    """
+
+    def __init__(self, order_nb: str | None):
+        self.order_nb = order_nb
+        super().__init__(f"No sales order {order_nb!r}")
+
+

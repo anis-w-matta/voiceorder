@@ -4,31 +4,28 @@ from decimal import Decimal
 
 from app.services.normalization import NUMBER_RE as _PURE_NUMBER_RE
 
-# Seeded from the unit words already documented in classifier.py's
-# SYSTEM_PROMPT ("box, carton, piece, kg, litre, 3ilbe, kartouna...") plus
-# their catalogue-observed plural/Arabic-script variants, and "sqft" -
-# square feet is real catalogue vocabulary (the aluminum foil/cling film
-# product family this project ships against is sold in 25/37.5/75/100 SQFT
-# packs). Extend here, never inline a second unit vocabulary in the
-# resolver/classifier/draft_builder.
+# The business only orders in two units: "each" (single/individual items)
+# and "packets". Extend here, never inline a second unit vocabulary in the
+# resolver/classifier/draft_builder. No Arabic-script/Arabizi synonyms are
+# included for these two - unlike the size/color vocabulary elsewhere,
+# guessing the wrong Lebanese Arabic word for "each"/"packets" would
+# silently mismatch rather than just fail to match, so that's left for a
+# native speaker to add correctly rather than guessed at here.
 UOM_SYNONYMS: dict[str, str] = {
-    "kg": "KG", "kilo": "KG", "kilos": "KG", "كيلو": "KG",
-    "box": "BOX", "boxes": "BOX", "3ilbe": "BOX", "3elbe": "BOX",
-    "ilbe": "BOX", "علبة": "BOX",
-    "carton": "CTN", "cartons": "CTN", "kartouna": "CTN", "kartoun": "CTN",
-    "كرتونة": "CTN",
-    "piece": "PCS", "pieces": "PCS", "pcs": "PCS", "حبة": "PCS",
-    "meter": "MTR", "meters": "MTR", "metre": "MTR", "metres": "MTR",
-    "متر": "MTR",
-    "litre": "LTR", "liter": "LTR", "litres": "LTR", "liters": "LTR",
-    "لتر": "LTR",
-    "sqft": "SQFT", "sq ft": "SQFT", "square feet": "SQFT", "square foot": "SQFT",
+    "each": "EACH", "eaches": "EACH", "ea": "EACH",
+    "packet": "PKT", "packets": "PKT", "pkt": "PKT", "pkts": "PKT",
 }
 
-# A number (int or decimal) followed by whitespace and a word - used to
-# recover a "100 meters"-shaped compound that landed whole in uom/raw_text
-# instead of being split into qty=100/uom="meters" by the extractor.
-_NUMBER_UNIT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([a-zA-Z؀-ۿ3-9]+)")
+# A number followed by AT LEAST ONE space and a word - used to recover a
+# "100 packets"-shaped compound that landed whole in uom/raw_text instead
+# of being split into qty=100/uom="packets" by the extractor. The space is
+# required (not \s*) so a fused digit-letter word with no unit match (e.g.
+# an Arabizi word using a leading digit as a consonant substitution) falls
+# through to "not recoverable" instead of being wrongly split into a
+# quantity + an unrecognized unit - that whole-word-vs-split ambiguity is
+# exactly why parse_quantity_uom() below checks canonical_uom() on the
+# whole string first, before ever reaching this regex.
+_NUMBER_UNIT_RE = re.compile(r"(\d+(?:\.\d+)?)\s+([a-zA-Z؀-ۿ3-9]+)")
 
 # Splits text into whitespace/punctuation-delimited tokens (keeping "."
 # attached, so decimals survive as one token) for _standalone_numbers below.

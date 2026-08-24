@@ -37,11 +37,31 @@ The salesman's speech is always one of exactly three command shapes, or
 none of them:
 
 1. place_order: names a customer, then lists one or more items to order.
-   Each item has a description and a quantity, usually with a unit
-   (carton, piece, dozen, etc). Example shape: "place order for <customer>
-   ... <item 1> quantity <number> <unit> ... <item 2> quantity <number>
-   <unit> ... the end". A leading counter word before an item ("one",
-   "two", "item one") is not part of the item description - strip it.
+   Each item has a description and a quantity, usually with a unit - this
+   business only orders in two units, "each" and "packets" (a close
+   variant/abbreviation like "pkt", "pack", or "ea" means the same thing).
+   Example shape: "place order for <customer> ... <item 1> quantity
+   <number> <unit> ... <item 2> quantity <number> <unit> ... the end". A
+   leading counter word before an item ("one", "two", "item one") is not
+   part of the item description - strip it.
+
+   The quantity always comes immediately BEFORE its unit, never after, and
+   quantity_text must always resolve to an actual number. A number is
+   sometimes misheard/transcribed as a similar-sounding word right before
+   "each"/"packets" - e.g. "to each" is really "two each" ("to" is the
+   number 2 here, not the preposition), the same way "for" can mean "four"
+   and "won" can mean "one". When the word immediately before the unit is
+   one of these, extract the number it actually sounds like, not the
+   literal word transcribed.
+
+   Every real item has an explicit unit word ("each"/"packets"/a variant)
+   spoken somewhere in its own span. Product names are frequently followed
+   by a trailing number or pack-size code with no unit attached to it at
+   all (e.g. "tendrex adult large 12x4", "napkins 200x2") - that trailing
+   code is part of item_text, never a second item. Only start a new item
+   when you reach the next number that is immediately followed by
+   "each"/"packets"/a variant; a bare number or number-x-number pattern
+   with no unit word right after it is never itself an item boundary.
 
 2. return_order: references a previous order to return - either by order
    number, or a description of which order (e.g. a date). Optionally
@@ -50,7 +70,13 @@ none of them:
 
 3. reorder: names a customer and says to repeat an order - either "the
    same order" / "last time" (mode=last), a specific past order number
-   (mode=order_nb), or an order from a spoken date (mode=date).
+   (mode=order_nb), or an order from a spoken date (mode=date). The
+   salesman may also change the order while repeating it ("reorder the
+   same thing but 4 each of X instead", "repeat my last order, add 2
+   packets of Y", "reorder order 12345 but drop the Z") - when they do,
+   extract each changed/added item the same way place_order items are
+   extracted (item_text/quantity_text/uom_text). Leave items empty for a
+   plain, unmodified repeat.
 
 Extract each item as a separate (item_text, quantity_text, uom_text)
 triple. item_text is the product description exactly as spoken - do NOT
@@ -83,10 +109,15 @@ class _GeminiItem(BaseModel):
         "the item/product description exactly as spoken - never "
         "corrected, resolved, or invented"))
     quantity_text: str = Field(description=(
-        "the spoken quantity (digits or number word) exactly as said"))
+        "the spoken quantity, always immediately before its unit and "
+        "always resolved to an actual number (digits or a number word) - "
+        "if a homophone was transcribed right before the unit (e.g. 'to' "
+        "before 'each'), extract the number it sounds like ('two'), not "
+        "the literal word"))
     uom_text: str = Field(description=(
-        "the spoken unit of measure exactly as said, or empty string if "
-        "none was said"))
+        "the unit of measure exactly as said, or empty string if none was "
+        "said - this business only uses \"each\" and \"packets\" (or a "
+        "close variant/abbreviation of one of those two)"))
 
 
 class _GeminiCommand(BaseModel):
@@ -180,10 +211,13 @@ def _to_parsed(result: _GeminiCommand, transcript: str
                                  items=_to_items(result.items))
 
     if result.command_type == "reorder":
+        # Unlike place_order, an empty customer_text is not a parse
+        # failure here: resolve_reorder/build_reorder already handle an
+        # unresolved customer gracefully (same "flag it for review, don't
+        # reject outright" path as an ambiguous/not-found customer match),
+        # and a reorder that only gives an order number ("reorder order
+        # 12345 but...") has enough to work with on its own.
         customer_text = result.customer_text.strip()
-        if not customer_text:
-            return ParseFailure(ParseError.CUSTOMER_DELIMITER_NOT_FOUND,
-                                "no customer extracted", transcript)
         mode = result.reorder_mode
         if mode not in ("last", "date", "order_nb"):
             return ParseFailure(ParseError.REORDER_MODE_NOT_FOUND,
@@ -194,7 +228,7 @@ def _to_parsed(result: _GeminiCommand, transcript: str
                                 f"reorder mode {mode!r} requires a reference",
                                 transcript)
         return ParsedReorder(customer_text=customer_text, mode=mode,
-                             reference=reference)
+                             reference=reference, items=_to_items(result.items))
 
     return ParseFailure(
         ParseError.COMMAND_START_NOT_FOUND,

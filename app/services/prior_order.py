@@ -92,15 +92,47 @@ class PriorOrderService:
                    OrderHeader.status == "open")
             .order_by(OrderHeader.created_at.desc())).all())
 
-    def find_by_order_nb(self, order_nb: str):
-        """The OrderHeader for `order_nb`, regardless of customer - used by
-        the return_order scripted command, which names an order number
-        directly rather than a customer. None if it doesn't exist or (rare:
-        the same order_nb reused across order_types) isn't unique -
-        never guessed."""
-        rows = list(self.s.scalars(
-            select(OrderHeader).where(OrderHeader.order_nb == order_nb)))
-        return rows[0] if len(rows) == 1 else None
+    def find_so_by_order_nb(self, order_nb: str | None):
+        """The sales order (order_type="SO") OrderHeader for `order_nb`,
+        regardless of customer - used by both return_order (references an
+        order number directly, no customer named at all) and reorder's
+        mode=order_nb (an order number identifies its own customer
+        unambiguously, the same way return_order already trusts it). Both
+        always mean an SO specifically, never a RETURN - scoping to SO
+        means this can never go ambiguous just because a RETURN has since
+        reused the same order_nb (commit.py's return-number-reuse), unlike
+        a plain "order_nb == value" lookup with no type filter would.
+        (order_nb, order_type) is the primary key, so this is a single
+        unambiguous lookup, never a guess among candidates. None if the
+        reference is missing, doesn't exist, or looks
+        SQL-injection-shaped - never guessed.
+
+        Tries the reference exactly as given first (real order numbers are
+        plain digits, but this is also what test fixtures' non-numeric
+        sentinel order numbers exercise); if that finds nothing, falls
+        back to a digits-only reading of it, the same normalization
+        resolve_target_explicit's order_nb mode already applies - a
+        salesman-spoken reference extracted with stray words still
+        attached ("order number 260000094") shouldn't resolve worse
+        through this customer-agnostic path than through the
+        customer-scoped one.
+        """
+        if not order_nb:
+            return None
+        ref_text = order_nb[:MAX_REFERENCE_LEN]
+        if _SUSPICIOUS.search(ref_text):
+            log_standalone(
+                "blocked_injection_attempt",
+                "reorder order_nb reference looked SQL-injection-shaped; "
+                "refused", level="warn", details={"reference": ref_text})
+            return None
+        header = self.s.get(OrderHeader, (ref_text, "SO"))
+        if header is not None:
+            return header
+        digits = "".join(ch for ch in ref_text if ch.isdigit())
+        if not digits or digits == ref_text:
+            return None
+        return self.s.get(OrderHeader, (digits, "SO"))
 
     def lines_of(self, header):
         return list(self.s.scalars(

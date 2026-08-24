@@ -32,6 +32,13 @@ class CandidateOut(BaseModel):
     attribute_conflict: bool = False
 
 
+class CustomerCandidateOut(BaseModel):
+    cust_nb: str
+    customer_name: str
+    phone_e164: str | None = None
+    score: float
+
+
 class LineOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     line_nb: int

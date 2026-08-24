@@ -30,6 +30,12 @@ _NUMBER_WORDS: dict[str, int] = {
     "3ashra": 10, "aashra": 10, "عشرة": 10, "عشره": 10,
     "un": 1, "une": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5,
     "sept": 7, "huit": 8, "neuf": 9, "dix": 10,
+    # ASR/transcription homophones for a spoken digit that land as a
+    # different, similar-sounding English word - e.g. "to each" is really
+    # "two each" (see gemini_command_extractor.py's PROMPT, which also
+    # tells Gemini to prefer the numeric reading up front; this is the
+    # deterministic-layer safety net for whatever still slips through).
+    "to": 2, "too": 2, "for": 4, "fore": 4, "won": 1, "ate": 8,
 }
 
 

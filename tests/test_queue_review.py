@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.db import SessionLocal, session_scope
-from app.models import (ActivityLog, ItemAlias, OrderDetail, OrderHeader,
+from app.models import (ActivityLog, Item, ItemAlias, OrderDetail, OrderHeader,
                         PendingLine, PendingRequest, Salesman, VoiceMessage)
 from app.main import app
 from app.services.auth import create_token, hash_password
@@ -87,7 +87,7 @@ def fresh_request():
     """(vm_id, req_id) for a plain 'new' request with one resolved line."""
     vm_id, req_id = _make_request(lines=[
         PendingLine(line_nb=1, raw_text="blue paint", item_nb="A100",
-                   item_desc="Blue Paint 5L", qty=Decimal("2"), uom="PCS",
+                   item_desc="Blue Paint 5L", qty=Decimal("2"), uom="EACH",
                    match_method="exact", match_confidence=1.0)])
     yield vm_id, req_id
     _cleanup(req_id, vm_id)
@@ -248,6 +248,55 @@ def test_accept_unresolved_line_422():
         _cleanup(req_id, vm_id)
 
 
+def test_accept_missing_uom_422():
+    vm_id, req_id = _make_request(lines=[
+        PendingLine(line_nb=1, raw_text="blue paint", item_nb="A100",
+                   item_desc="Blue Paint 5L", qty=Decimal("2"), uom=None)])
+    try:
+        resp = client.post(f"/requests/{req_id}/accept",
+                           headers={"Authorization": f"Bearer {TOKENS['alice']}"},
+                           json={"order_type": "SO", "lines": [],
+                                 "removed_line_nbs": []})
+        assert resp.status_code == 422
+    finally:
+        _cleanup(req_id, vm_id)
+
+
+def test_accept_unrecognized_uom_422(fresh_request):
+    # The business only orders in EACH/PKT (quantity_uom.py's
+    # UOM_SYNONYMS) - a caller sending anything else must be refused, not
+    # silently committed under a unit nothing downstream recognizes.
+    vm_id, req_id = fresh_request
+    resp = client.post(f"/requests/{req_id}/accept",
+                       headers={"Authorization": f"Bearer {TOKENS['alice']}"},
+                       json={"order_type": "SO",
+                             "lines": [{"line_nb": 1, "item_nb": "A100",
+                                       "qty": "2", "uom": "BOX"}],
+                             "removed_line_nbs": []})
+    assert resp.status_code == 422
+
+
+def test_accept_normalizes_uom_synonym_case(fresh_request):
+    vm_id, req_id = fresh_request
+    resp = client.post(f"/requests/{req_id}/accept",
+                       headers={"Authorization": f"Bearer {TOKENS['alice']}"},
+                       json={"order_type": "SO",
+                             "lines": [{"line_nb": 1, "item_nb": "A100",
+                                       "qty": "2", "uom": "each"}],
+                             "removed_line_nbs": []})
+    order_nb = resp.json()["order_nb"]
+    try:
+        assert resp.status_code == 200
+        s = SessionLocal()
+        try:
+            detail = s.get(OrderDetail, (order_nb, "SO", 1))
+            assert detail.uom == "EACH"
+        finally:
+            s.close()
+    finally:
+        _cleanup(req_id, vm_id, order_nb)
+
+
 def test_accept_already_committed_409(fresh_request):
     vm_id, req_id = fresh_request
     resp1 = client.post(f"/requests/{req_id}/accept",
@@ -267,6 +316,113 @@ def test_accept_already_committed_409(fresh_request):
         _cleanup(req_id, vm_id, order_nb)
 
 
+def test_accept_full_return_correction_backfills_lines():
+    # A full return (no items spoken) whose order reference didn't
+    # resolve at draft time drafts with zero lines - draft_builder only
+    # copies lines from an order it actually found. Correcting the order
+    # number at accept time via target_order_nb must backfill that
+    # order's lines (app/services/commit.py), not just re-derive
+    # cust_nb/target_order_nb and leave the request stuck on
+    # UnresolvedLines with no way to finish accepting short of manually
+    # re-adding every item by hand.
+    vm_id, req_id = _make_request(cust_nb=None, lines=[])
+    s = SessionLocal()
+    try:
+        req = s.get(PendingRequest, req_id)
+        req.primary_intent = "return_order"
+        req.raw_model_output = {"scripted": True,
+                                "command_type": "return_order",
+                                "order_reference": "ZZQR0001",
+                                "full_return": True}
+        s.add(OrderHeader(order_nb="ZZQR0001", order_type="SO",
+                          cust_nb="C001", status="open"))
+        s.add(OrderDetail(order_nb="ZZQR0001", order_type="SO", line_nb=1,
+                          item_nb="A100", item_desc="Blue Paint 5L",
+                          qty=Decimal("2"), uom="EACH"))
+        s.commit()
+    finally:
+        s.close()
+    try:
+        resp = client.post(f"/requests/{req_id}/accept",
+                           headers={"Authorization": f"Bearer {TOKENS['alice']}"},
+                           json={"order_type": "RETURN", "lines": [],
+                                 "removed_line_nbs": [],
+                                 "target_order_nb": "ZZQR0001"})
+        assert resp.status_code == 200
+        order_nb = resp.json()["order_nb"]
+        s = SessionLocal()
+        try:
+            detail = s.get(OrderDetail, (order_nb, "RETURN", 1))
+            assert detail is not None
+            assert detail.item_nb == "A100"
+            assert detail.qty == Decimal("2.000")
+        finally:
+            s.close()
+        _cleanup(req_id, vm_id, order_nb=order_nb, order_type="RETURN")
+    finally:
+        _cleanup(req_id, vm_id, order_nb="ZZQR0001", order_type="SO")
+
+
+def test_accept_reorder_correction_merges_adjustment_onto_target():
+    # A reorder+adjustment whose target never resolved at draft time
+    # (customer not named/matched) drafts with only the adjustment item
+    # standing alone - no prior-order baseline was known yet. Correcting
+    # the order number at accept time must merge that already-drafted
+    # adjustment onto the now-known order's own lines (line_nb 1, 2, ...
+    # sequential), not discard the salesman's actual spoken change or
+    # silently drop the order's other line.
+    vm_id, req_id = _make_request(cust_nb=None, lines=[
+        PendingLine(line_nb=1, raw_text="blue paint", item_nb="A100",
+                   item_desc="Blue Paint 5L", qty=Decimal("5"), uom="EACH",
+                   match_method="fuzzy", match_confidence=0.9)])
+    s = SessionLocal()
+    try:
+        req = s.get(PendingRequest, req_id)
+        req.primary_intent = "repeat_order_adjusted"
+        req.raw_model_output = {"scripted": True, "command_type": "reorder",
+                                "mode": "order_nb", "reference": "ZZQR0002",
+                                "adjusted": True}
+        s.add(Item(item_number="ZZQRI2", item_desc="ZZQR Widget",
+                   category="Misc"))
+        s.add(OrderHeader(order_nb="ZZQR0002", order_type="SO",
+                          cust_nb="C001", status="open"))
+        s.add(OrderDetail(order_nb="ZZQR0002", order_type="SO", line_nb=1,
+                          item_nb="ZZQRI2", item_desc="ZZQR Widget",
+                          qty=Decimal("1"), uom="EACH"))
+        s.commit()
+    finally:
+        s.close()
+    try:
+        resp = client.post(f"/requests/{req_id}/accept",
+                           headers={"Authorization": f"Bearer {TOKENS['alice']}"},
+                           json={"order_type": "SO", "lines": [],
+                                 "removed_line_nbs": [],
+                                 "target_order_nb": "ZZQR0002"})
+        assert resp.status_code == 200
+        order_nb = resp.json()["order_nb"]
+        s = SessionLocal()
+        try:
+            details = {d.item_nb: d for d in s.query(OrderDetail).filter_by(
+                order_nb=order_nb, order_type="SO")}
+            assert set(details) == {"ZZQRI2", "A100"}
+            assert details["ZZQRI2"].qty == Decimal("1.000")
+            assert details["A100"].qty == Decimal("5.000")
+            line_nbs = sorted(d.line_nb for d in details.values())
+            assert line_nbs == [1, 2]
+        finally:
+            s.close()
+        _cleanup(req_id, vm_id, order_nb=order_nb, order_type="SO")
+    finally:
+        _cleanup(req_id, vm_id, order_nb="ZZQR0002", order_type="SO")
+        s = SessionLocal()
+        try:
+            s.execute(Item.__table__.delete().where(
+                Item.item_number == "ZZQRI2"))
+            s.commit()
+        finally:
+            s.close()
+
+
 def test_accept_denied_when_customer_does_not_exist():
     # Database is the source of truth for customer identity: even if a
     # PendingRequest somehow carries a cust_nb with no matching Customer
@@ -274,7 +430,7 @@ def test_accept_denied_when_customer_does_not_exist():
     # action can override that.
     vm_id, req_id = _make_request(cust_nb="ZNOPE_999999", lines=[
         PendingLine(line_nb=1, raw_text="blue paint", item_nb="A100",
-                   item_desc="Blue Paint 5L", qty=Decimal("2"), uom="PCS",
+                   item_desc="Blue Paint 5L", qty=Decimal("2"), uom="EACH",
                    match_method="exact", match_confidence=1.0)])
     try:
         resp = client.post(f"/requests/{req_id}/accept",
@@ -470,7 +626,7 @@ def test_non_bill_intents_stay_in_queue_uncommitted(intent):
 def test_accept_with_remember_alias_creates_alias_usable_by_resolver():
     vm_id, req_id = _make_request(lines=[
         PendingLine(line_nb=1, raw_text="a very special widget",
-                   item_nb=None, qty=Decimal("1"), uom="PCS",
+                   item_nb=None, qty=Decimal("1"), uom="EACH",
                    candidates=[{"item_nb": "A101", "item_desc": "White Paint 5L",
                                "category": "Paint", "score": 0.65,
                                "method": "fuzzy"}])])
@@ -507,7 +663,7 @@ def test_accept_with_remember_alias_creates_alias_usable_by_resolver():
 def test_accept_without_remember_alias_does_not_write_alias():
     vm_id, req_id = _make_request(lines=[
         PendingLine(line_nb=1, raw_text="another special gadget",
-                   item_nb=None, qty=Decimal("1"), uom="PCS",
+                   item_nb=None, qty=Decimal("1"), uom="EACH",
                    candidates=[{"item_nb": "A101", "item_desc": "White Paint 5L",
                                "category": "Paint", "score": 0.65,
                                "method": "fuzzy"}])])

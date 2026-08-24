@@ -32,14 +32,21 @@ ABBREVIATION_DICT: dict[str, str] = {
 LEBANESE_DICT: dict[str, str] = {**SIZE_SYNONYMS, **COLOR_SYNONYMS}
 
 # UOM_DICT: canonical unit-of-measure vocabulary, built on the existing
-# UOM_SYNONYMS (app/services/quantity_uom.py) plus French terms the
-# original dict didn't cover.
+# UOM_SYNONYMS (app/services/quantity_uom.py) plus the French terms for
+# the same two units.
+#
+# TODO(lebanese-arabic-uom): no Lebanese Arabic/Arabizi word for "each" or
+# "packets" is filled in yet - the two keys below are placeholders, not
+# real vocabulary, so nothing spoken can accidentally match them by
+# accident. Once a native speaker confirms the actual word(s) salesmen use,
+# rename each placeholder key to the real word (Arabizi and/or Arabic
+# script - add both if they differ) and delete this TODO. Do not guess at
+# the translation yourself: a wrong synonym here would silently resolve to
+# the wrong unit instead of just failing to match.
 UOM_DICT: dict[str, str] = {
     **UOM_SYNONYMS,
-    "douzaine": "DZ", "douzaines": "DZ", "dozen": "DZ", "dozens": "DZ",
-    "darzen": "DZ",
-    "caisse": "CTN", "caisses": "CTN", "kartouneh": "CTN", "kartuneh": "CTN",
-    "unite": "PCS", "unites": "PCS", "unité": "PCS", "unités": "PCS",
-    "sac": "PCS", "sacs": "PCS",
-    "rouleau": "PCS", "rouleaux": "PCS",
+    "chacun": "EACH", "chaque": "EACH",
+    "paquet": "PKT", "paquets": "PKT",
+    "__TODO_ARABIZI_EACH__": "EACH",
+    "__TODO_ARABIZI_PACKETS__": "PKT",
 }

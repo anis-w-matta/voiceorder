@@ -62,3 +62,27 @@ def match_customer(session: Session, raw_text: str,
 
     return CustomerMatch(top[0], top[1], top[2], MatchStatus.MATCHED,
                          candidates=scored[:5])
+
+
+def search_customers(session: Session, q: str, limit: int = 5
+                     ) -> list[tuple[str, str, str | None, float]]:
+    """Ranked customer lookup for an explicit human search (the Request
+    screen's "select customer" picker) - unlike match_customer, this never
+    applies CUSTOMER_MATCH_THRESHOLD/tie-margin gating, since a human
+    reviewer picking from a visible list doesn't need the auto-resolution
+    safety net that exists to stop the *pipeline* from silently guessing.
+    """
+    query = (q or "").strip()
+    if not query:
+        return []
+    q_norm = normalize_text(query)
+    customers = list(session.scalars(select(Customer)))
+    scored = [
+        (c.customer_number, c.customer_name, c.phone_e164,
+         max(fuzz.token_sort_ratio(q_norm, normalize_text(c.customer_name)),
+             fuzz.ratio(q_norm, normalize_text(c.customer_number))
+             if c.customer_number else 0.0))
+        for c in customers
+    ]
+    scored.sort(key=lambda t: t[3], reverse=True)
+    return scored[:limit]

@@ -72,6 +72,33 @@ def test_reorder_order_nb_mode_with_reference():
     assert parsed.reference == "260000021"
 
 
+def test_reorder_order_nb_mode_without_customer_still_parses():
+    # Unlike place_order, a reorder with no spoken customer name is not a
+    # parse failure - resolve_reorder/build_reorder flag an unresolved
+    # customer for review rather than rejecting the command outright, and
+    # "reorder order 260000094 but ..." has enough (an order number) to
+    # act on without a customer name at all.
+    result = _GeminiCommand(command_type="reorder", customer_text="",
+                            reorder_mode="order_nb", order_reference="260000094")
+    parsed = _to_parsed(result, "raw transcript")
+    assert isinstance(parsed, ParsedReorder)
+    assert parsed.customer_text == ""
+    assert parsed.reference == "260000094"
+
+
+def test_reorder_with_adjustment_items_converts_them():
+    result = _GeminiCommand(
+        command_type="reorder", customer_text="Test Trading",
+        reorder_mode="order_nb", order_reference="260000094",
+        items=[_GeminiItem(item_text="tendrex adult large 12x4",
+                           quantity_text="four", uom_text="each")])
+    parsed = _to_parsed(result, "raw transcript")
+    assert isinstance(parsed, ParsedReorder)
+    assert len(parsed.items) == 1
+    assert parsed.items[0].item_text == "tendrex adult large 12x4"
+    assert parsed.items[0].quantity_text == "four"
+
+
 def test_reorder_missing_mode_is_parse_failure():
     result = _GeminiCommand(command_type="reorder", customer_text="Test Trading",
                             reorder_mode=None)

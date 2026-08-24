@@ -4,7 +4,62 @@ from app.models import Item, PendingLine, PendingRequest
 from app.schemas.enums import Intent, MatchMethod
 from app.services.activity_log import log as log_activity
 from app.services.item_classifier import classify_line
+from app.services.scripted.config import (ITEM_AMBIGUITY_MARGIN,
+                                          ITEM_FUZZY_THRESHOLD)
 from app.services.scripted.models import MatchStatus, ScriptedOrderResult
+
+
+def lines_from_prior_order(session, prior_lines, raw_text_fn):
+    """PendingLine rows built from a list of prior OrderDetail rows -
+    shared by DraftBuilder's _from_prior (reorder) and build_return's
+    full-return branch, and by commit.py's target_order_nb_override path
+    (a full return whose reference resolved only at accept time still
+    needs its lines populated from the now-known order, the same way
+    build_return would have at draft time). A module-level function
+    rather than a DraftBuilder method since it only ever needed `session`,
+    not any of DraftBuilder's other collaborators.
+
+    Looks up each item's *current* category rather than trusting the
+    historical order_details snapshot, which may predate this column
+    (NULL) or be stale relative to a catalogue re-categorisation.
+    `raw_text_fn(order_detail)` supplies the caller-specific label
+    ("[from order ...]" / "[return of order ...]").
+    """
+    if not prior_lines:
+        return []
+    items = {i.item_number: i for i in session.scalars(select(Item).where(
+        Item.item_number.in_({d.item_nb for d in prior_lines})))}
+    return [PendingLine(
+        line_nb=n, raw_text=raw_text_fn(d),
+        item_nb=d.item_nb, item_desc=d.item_desc, qty=d.qty, uom=d.uom,
+        match_confidence=1.0, match_method=MatchMethod.prior_order.value,
+        category=classify_line(
+            matched_category=items[d.item_nb].category
+            if d.item_nb in items else None,
+            raw_text=d.item_desc, known_categories=[]))
+        for n, d in enumerate(prior_lines, start=1)]
+
+
+def _confident_candidate_among(candidates, allowed_item_nbs):
+    """The single candidate confidently matching among `allowed_item_nbs`,
+    or None - the same bar an ordinary top-1 catalogue match has to clear
+    (ITEM_FUZZY_THRESHOLD, and a real margin over the runner-up), not just
+    whichever scores highest among the allowed set. Shared by
+    DraftBuilder._scope_return_lines_to_order (a return's items must be on
+    the order it's returning against) and _merge_adjustment_lines (a
+    reorder adjustment that's ambiguous catalogue-wide - e.g. two SKUs
+    sharing an identical description - often isn't ambiguous once
+    narrowed to what's already on the order being repeated).
+    """
+    narrowed = sorted(
+        (c for c in candidates if c.item_number in allowed_item_nbs),
+        key=lambda c: c.score, reverse=True)
+    if not narrowed or narrowed[0].score < ITEM_FUZZY_THRESHOLD:
+        return None
+    if (len(narrowed) > 1 and
+            narrowed[0].score - narrowed[1].score < ITEM_AMBIGUITY_MARGIN):
+        return None
+    return narrowed[0]
 
 
 class DraftBuilder:
@@ -20,41 +75,12 @@ class DraftBuilder:
         self.prior = prior
         self.catalogue = catalogue
 
-    def _lines_from_prior_lines(self, prior_lines, raw_text_fn):
-        """PendingLine rows built from a list of prior OrderDetail rows -
-        shared by _from_prior (reorder) and build_return's full-return
-        branch, which used to duplicate this exact lookup+construction and
-        had drifted apart: one path ran the result through classify_line's
-        tier-2/3 fallback and the other left category=None outright for an
-        item that's since left the catalogue, instead of the "unable to
-        classify" tier-3 fallback every other PendingLine in the app gets.
-        `raw_text_fn(order_detail)` supplies the label distinguishing the
-        two callers ("[from order ...]" vs "[return of order ...]").
-
-        Looks up each item's *current* category rather than trusting the
-        historical order_details snapshot, which may predate this column
-        (NULL) or be stale relative to a catalogue re-categorisation.
-        """
-        if not prior_lines:
-            return []
-        items = {i.item_number: i for i in self.s.scalars(select(Item).where(
-            Item.item_number.in_({d.item_nb for d in prior_lines})))}
-        return [PendingLine(
-            line_nb=n, raw_text=raw_text_fn(d),
-            item_nb=d.item_nb, item_desc=d.item_desc, qty=d.qty, uom=d.uom,
-            match_confidence=1.0, match_method=MatchMethod.prior_order.value,
-            category=classify_line(
-                matched_category=items[d.item_nb].category
-                if d.item_nb in items else None,
-                raw_text=d.item_desc, known_categories=[]))
-            for n, d in enumerate(prior_lines, start=1)]
-
     def _from_prior(self, target):
         if not target:
             return []
         prior_lines = self.prior.lines_of(target)
-        return self._lines_from_prior_lines(
-            prior_lines, lambda d: f"[from order {target.order_nb}]")
+        return lines_from_prior_order(
+            self.s, prior_lines, lambda d: f"[from order {target.order_nb}]")
 
     def _pending_lines_from_scripted(self, scripted: ScriptedOrderResult
                                      ) -> list[PendingLine]:
@@ -107,16 +133,20 @@ class DraftBuilder:
         collapses to one answer (see ItemMatchResult.candidates - already
         scored by resolve_item, only the pool is narrowed here, nothing
         is re-queried from the item table).
+
+        The narrowed pool still has to clear the same bar an ordinary
+        top-1 match does - ITEM_FUZZY_THRESHOLD, and a real margin over
+        the runner-up - rather than auto-accepting whatever scores highest
+        among "on this order" candidates no matter how weak, or silently
+        picking one side of a genuine tie the way match_item.py's
+        unique_top/tied_with_top would never allow.
         """
         order_item_nbs = {d.item_nb for d in self.prior.lines_of(order_header)}
         for line, rl in zip(lines, resolved):
             if line.item_nb in order_item_nbs:
                 continue  # top-1 catalogue match is already on this order
-            in_order = sorted(
-                (c for c in rl.match.candidates if c.item_number in order_item_nbs),
-                key=lambda c: c.score, reverse=True)
-            if in_order:
-                best = in_order[0]
+            best = _confident_candidate_among(rl.match.candidates, order_item_nbs)
+            if best is not None:
                 line.item_nb = best.item_number
                 line.item_desc = best.item_description
                 line.match_confidence = best.score / 100
@@ -127,8 +157,16 @@ class DraftBuilder:
             else:
                 line.item_nb = None
                 line.match_confidence = None
-                if "item_not_in_order" not in line.line_flags:
-                    line.line_flags = line.line_flags + ["item_not_in_order"]
+                # Distinguish "nothing on this order plausibly matches"
+                # from "more than one thing on this order plausibly
+                # matches" - the latter is a real ambiguity the reviewer
+                # needs to pick between, not a "wrong item" report.
+                in_order = any(c.item_number in order_item_nbs
+                              for c in rl.match.candidates)
+                flag = ("item_ambiguous_in_order" if in_order
+                       else "item_not_in_order")
+                if flag not in line.line_flags:
+                    line.line_flags = line.line_flags + [flag]
             line.resolution_meta = {
                 **line.resolution_meta,
                 "order_scoped": order_header.order_nb,
@@ -179,8 +217,8 @@ class DraftBuilder:
         cust_nb = order_header.cust_nb if order_header else None
         if scripted.full_return:
             prior_lines = self.prior.lines_of(order_header) if order_header else []
-            lines = self._lines_from_prior_lines(
-                prior_lines,
+            lines = lines_from_prior_order(
+                self.s, prior_lines,
                 lambda d: f"[return of order {order_header.order_nb}]")
         else:
             lines = self._pending_lines_from_scripted(scripted)
@@ -216,17 +254,100 @@ class DraftBuilder:
                     request_id=req.id, cust_nb=cust_nb)
         return req
 
+    def _merge_adjustment_lines(self, prior_lines: list[PendingLine],
+                                adjustment_lines: list[PendingLine],
+                                adjustment_resolved
+                                ) -> list[PendingLine]:
+        """Applies a reorder's spoken adjustments on top of the copied
+        prior-order lines: an adjustment that resolves to an item already
+        on the prior order *in the same unit* overrides that line's qty
+        (the reviewer sees the new value, not two lines to reconcile by
+        hand); one that resolves to a different item, the same item in a
+        different unit, or doesn't resolve at all, is appended as a new
+        line for the reviewer to confirm, never silently dropped. Keying
+        on (item_nb, uom) rather than item_nb alone matters: two spoken
+        adjustments for the same item in different units ("4 each X ...
+        and also 2 packets X") must both survive as separate lines, not
+        have the second overwrite the first just because they'd otherwise
+        collide on the same prior-order slot - the same "never guess
+        across a unit mismatch" rule resolve_order.py's
+        _merge_duplicate_lines already applies within one utterance.
+
+        Before falling back to "append as a new line", an adjustment that
+        didn't resolve to a single item catalogue-wide (e.g. "tendrex
+        adult large 12x4" ambiguous between two SKUs sharing a description)
+        is given the same second look _scope_return_lines_to_order gives a
+        return's items: narrowed to just what's already on the order being
+        repeated. "4 each of the tendrex" almost always means the tendrex
+        already on this order, not an instruction to leave the line
+        unresolved for a human to notice it's the same product.
+        `adjustment_resolved` is scripted.lines - the ResolvedOrderLine
+        list `adjustment_lines` was built from, same order, needed here
+        for its ItemMatchResult.candidates.
+        """
+        merged = list(prior_lines)
+        prior_item_nbs = {l.item_nb for l in merged if l.item_nb}
+        index_by_key = {(l.item_nb, l.uom): i for i, l in enumerate(merged)
+                        if l.item_nb}
+        for adj, rl in zip(adjustment_lines, adjustment_resolved):
+            if adj.item_nb is None:
+                best = _confident_candidate_among(rl.match.candidates,
+                                                  prior_item_nbs)
+                if best is not None:
+                    adj.item_nb = best.item_number
+                    adj.item_desc = best.item_description
+                    adj.match_confidence = best.score / 100
+                    adj.match_method = "fuzzy"
+                    adj.line_flags = [f for f in adj.line_flags if f not in
+                                      ("ambiguous_catalogue_match",
+                                       "unknown_alias")]
+                    adj.category = best.item_family
+            idx = (index_by_key.get((adj.item_nb, adj.uom))
+                  if adj.item_nb else None)
+            if idx is None:
+                merged.append(adj)
+            else:
+                adj.line_nb = merged[idx].line_nb
+                merged[idx] = adj
+        for n, line in enumerate(merged, start=1):
+            line.line_nb = n
+        return merged
+
     def build_reorder(self, voice, scripted: ScriptedOrderResult):
         """reorder -> PendingRequest, reusing the existing prior-order
-        machinery (PriorOrderService.resolve_target_explicit + _from_prior)."""
+        machinery (PriorOrderService.resolve_target_explicit + _from_prior).
+        A reorder that also names adjustment items (scripted.lines) merges
+        them onto the copied prior lines and is flagged as an adjusted
+        repeat rather than a plain one."""
         cust_nb = (scripted.customer.customer_number
                   if scripted.customer and
                   scripted.customer.status == MatchStatus.MATCHED else None)
 
+        # An order number, unlike a customer name, identifies its own
+        # customer unambiguously - mode=order_nb resolves the target (and
+        # from it, the customer) straight from order_header first, the
+        # same way return_order already trusts an order reference without
+        # requiring a spoken customer name at all. This is what lets
+        # "reorder order 12345 but ..." resolve even when no customer was
+        # named, or was misheard.
         target, ambiguity = None, "customer_not_resolved"
-        if cust_nb:
+        customer_mismatch = False
+        if scripted.reorder_mode == "order_nb" and scripted.order_reference:
+            target = self.prior.find_so_by_order_nb(scripted.order_reference)
+            ambiguity = None if target else "order_not_found"
+        if target is None and cust_nb:
             target, ambiguity = self.prior.resolve_target_explicit(
                 cust_nb, scripted.reorder_mode, scripted.order_reference)
+        if target and cust_nb and target.cust_nb != cust_nb:
+            # The order itself is authoritative (same trust the operator's
+            # target_order_nb correction gets at commit time, in
+            # commit.py) - proceed under the order's real customer, but
+            # flag the disagreement so a reviewer notices a possible
+            # misheard customer name rather than it passing silently.
+            customer_mismatch = True
+        if target:
+            cust_nb = target.cust_nb
+
         log_activity(
             self.s, "reorder_resolved",
             f"scripted reorder for {cust_nb} resolved to order "
@@ -237,20 +358,38 @@ class DraftBuilder:
             voice_message_id=voice.id,
             details={"ambiguity": ambiguity} if ambiguity else {})
 
-        lines = self._from_prior(target)
-        flags = [] if target else [f"reorder_{ambiguity}"]
-        if scripted.customer and scripted.customer.status != MatchStatus.MATCHED:
-            flags.append(f"customer_{scripted.customer.status.value}")
+        has_adjustment = bool(scripted.lines)
+        prior_lines = self._from_prior(target)
+        if has_adjustment:
+            adjustment_lines = self._pending_lines_from_scripted(scripted)
+            lines = self._merge_adjustment_lines(prior_lines, adjustment_lines,
+                                                 scripted.lines)
+        else:
+            lines = prior_lines
 
+        flags = [] if target else [f"reorder_{ambiguity}"]
+        # Once the target resolves, cust_nb is known (from the order
+        # itself if the spoken name didn't independently match) - a stale
+        # "customer_not_found/ambiguous" flag about the name match alone
+        # would be misleading noise at that point.
+        if (not target and scripted.customer and
+                scripted.customer.status != MatchStatus.MATCHED):
+            flags.append(f"customer_{scripted.customer.status.value}")
+        if customer_mismatch:
+            flags.append("reorder_customer_mismatch")
+
+        intent = (Intent.repeat_order_adjusted if has_adjustment
+                 else Intent.repeat_order)
         req = PendingRequest(
             voice_message_id=voice.id, cust_nb=cust_nb,
-            intents=[Intent.repeat_order.value],
-            primary_intent=Intent.repeat_order.value,
+            intents=[intent.value],
+            primary_intent=intent.value,
             target_order_nb=target.order_nb if target else None,
             target_order_type=target.order_type if target else None,
             raw_model_output={"scripted": True, "command_type": "reorder",
                               "mode": scripted.reorder_mode,
-                              "reference": scripted.order_reference},
+                              "reference": scripted.order_reference,
+                              "adjusted": has_adjustment},
             flags=flags,
             classification_quality="good" if target else "questionable",
             status="new")

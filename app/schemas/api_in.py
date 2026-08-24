@@ -24,6 +24,15 @@ class AcceptIn(BaseModel):
     # buggy caller can no longer silently drop items from the order.
     removed_line_nbs: list[int] = Field(default_factory=list)
     note: str | None = None
+    # An operator's manual customer pick, for requests the voice pipeline
+    # couldn't identify a customer for. commit.py still validates this
+    # against the customer table before committing - this is a proposal,
+    # not a bypass of that check.
+    cust_nb: str | None = None
+    # A return's operator-supplied/corrected order reference. For a RETURN,
+    # cust_nb is pulled from this order rather than picked independently
+    # (see commit.py) - only meaningful when order_type == "RETURN".
+    target_order_nb: str | None = None
 
 
 class RejectIn(BaseModel):
