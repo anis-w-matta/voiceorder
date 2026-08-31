@@ -21,7 +21,7 @@ def login(body: LoginIn, s: Session = Depends(get_db)):
         raise HTTPException(401, "invalid id or password")
     token = create_token(salesman.login_id)
     return LoginOut(login_id=salesman.login_id, name=salesman.name,
-                    email=salesman.email, token=token)
+                    email=salesman.email, role=salesman.role, token=token)
 
 
 @router.post("/auth/register", response_model=SalesmanOut,

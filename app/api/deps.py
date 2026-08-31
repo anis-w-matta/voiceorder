@@ -60,3 +60,12 @@ def get_current_salesman(authorization: str | None = Header(default=None),
 
 def get_operator(salesman: Salesman = Depends(get_current_salesman)) -> str:
     return salesman.login_id
+
+
+def require_admin(salesman: Salesman = Depends(get_current_salesman)) -> Salesman:
+    """Gates the customer-assignment endpoints (app/api/customers.py) - a
+    plain salesman may only ever act as themselves (see
+    app/services/authorization.py), never assign customers to anyone."""
+    if not salesman.is_admin:
+        raise HTTPException(403, "admin access required")
+    return salesman

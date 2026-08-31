@@ -28,6 +28,7 @@ class SalesmanOut(BaseModel):
     login_id: str
     name: str
     email: str | None
+    role: str = "salesman"
 
 
 class LoginOut(SalesmanOut):
