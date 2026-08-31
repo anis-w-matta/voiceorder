@@ -21,13 +21,34 @@ def _client() -> httpx.Client:
                         timeout=settings.catalog_timeout_seconds)
 
 
+def _get(path: str, **params):
+    """GET `path`, raising on any non-2xx status, returning the parsed JSON
+    body. `params` values of None are dropped by httpx before the request
+    is sent, same as every call site already relied on."""
+    with _client() as c:
+        r = c.get(path, params=params)
+        r.raise_for_status()
+        return r.json()
+
+
+def _post(path: str, json: dict):
+    with _client() as c:
+        r = c.post(path, json=json)
+        r.raise_for_status()
+        return r.json()
+
+
+def _patch(path: str, json: dict):
+    with _client() as c:
+        r = c.patch(path, json=json)
+        r.raise_for_status()
+        return r.json()
+
+
 # ---- items ---------------------------------------------------------------
 
 def resolve_item(item_span: str) -> ItemMatchResult:
-    with _client() as c:
-        r = c.get("/items/resolve", params={"q": item_span})
-        r.raise_for_status()
-        body = r.json()
+    body = _get("/items/resolve", q=item_span)
     return ItemMatchResult(
         item_number=body["item_number"], item_description=body["item_description"],
         item_family=body["item_family"], status=MatchStatus(body["status"]),
@@ -51,24 +72,15 @@ class ItemCacheRow:
 
 
 def search_items(q: str) -> list[dict]:
-    with _client() as c:
-        r = c.get("/items/search", params={"q": q})
-        r.raise_for_status()
-        return r.json()
+    return _get("/items/search", q=q)
 
 
 def list_all_items() -> list[ItemCacheRow]:
-    with _client() as c:
-        r = c.get("/items/all")
-        r.raise_for_status()
-        return [ItemCacheRow(**row) for row in r.json()]
+    return [ItemCacheRow(**row) for row in _get("/items/all")]
 
 
 def all_item_categories() -> list[str]:
-    with _client() as c:
-        r = c.get("/items/all")
-        r.raise_for_status()
-        return sorted({row["category"] for row in r.json()})
+    return sorted({row["category"] for row in _get("/items/all")})
 
 
 def get_items_batch(item_nbs: list[str]) -> dict[str, str]:
@@ -79,19 +91,14 @@ def get_items_batch(item_nbs: list[str]) -> dict[str, str]:
     numbers = [n for n in dict.fromkeys(item_nbs) if n]
     if not numbers:
         return {}
-    with _client() as c:
-        r = c.get("/items/by-numbers", params={"nbs": ",".join(numbers)})
-        r.raise_for_status()
-        return {row["item_nb"]: row["category"] for row in r.json()}
+    rows = _get("/items/by-numbers", nbs=",".join(numbers))
+    return {row["item_nb"]: row["category"] for row in rows}
 
 
 # ---- customers ------------------------------------------------------------
 
 def match_customer(text_val: str) -> CustomerMatch:
-    with _client() as c:
-        r = c.get("/customers/match", params={"q": text_val})
-        r.raise_for_status()
-        body = r.json()
+    body = _get("/customers/match", q=text_val)
     return CustomerMatch(customer_number=body["cust_nb"],
                          customer_name=body["customer_name"],
                          score=body["score"], status=MatchStatus(body["status"]))
@@ -102,12 +109,8 @@ def search_customers(q: str, *, salesman_id: str | None = None,
     """salesman_id/admin come from the caller's own authenticated identity
     (app.api.deps.get_current_salesman), never from a client-supplied
     parameter - see app/api/customers.py."""
-    with _client() as c:
-        r = c.get("/customers/search",
-                  params={"q": q, "salesman_id": salesman_id, "admin": admin})
-        r.raise_for_status()
-        return [(row["cust_nb"], row["customer_name"], row["score"])
-               for row in r.json()]
+    rows = _get("/customers/search", q=q, salesman_id=salesman_id, admin=admin)
+    return [(row["cust_nb"], row["customer_name"], row["score"]) for row in rows]
 
 
 @dataclass
@@ -119,11 +122,8 @@ class CustomerRow:
 def list_all_customers(*, salesman_id: str | None = None,
                        admin: bool = False) -> list[CustomerRow]:
     """salesman_id/admin: see search_customers() above - same contract."""
-    with _client() as c:
-        r = c.get("/customers/all",
-                  params={"salesman_id": salesman_id, "admin": admin})
-        r.raise_for_status()
-        return [CustomerRow(**row) for row in r.json()]
+    rows = _get("/customers/all", salesman_id=salesman_id, admin=admin)
+    return [CustomerRow(**row) for row in rows]
 
 
 def get_customers_batch(cust_nbs: list[str]) -> dict[str, str]:
@@ -134,10 +134,8 @@ def get_customers_batch(cust_nbs: list[str]) -> dict[str, str]:
     numbers = [n for n in dict.fromkeys(cust_nbs) if n]
     if not numbers:
         return {}
-    with _client() as c:
-        r = c.get("/customers/by-numbers", params={"nbs": ",".join(numbers)})
-        r.raise_for_status()
-        return {row["cust_nb"]: row["customer_name"] for row in r.json()}
+    rows = _get("/customers/by-numbers", nbs=",".join(numbers))
+    return {row["cust_nb"]: row["customer_name"] for row in rows}
 
 
 def get_customer(cust_nb: str) -> CustomerRow | None:
@@ -160,22 +158,21 @@ class CustomerDetail:
     salesman_id: str | None
 
 
-def get_customer_detail(cust_nb: str) -> CustomerDetail | None:
-    """Full detail for one customer, including salesman_id - backs the
-    backend's direct-access endpoint (GET /customers/{cust_nb}) and the
-    ownership checks on claim/reject/callback, which (unlike accept) never
-    reach catalog-service's own POST /orders check."""
-    with _client() as c:
-        r = c.get(f"/customers/{cust_nb}")
-        r.raise_for_status()
-        body = r.json()
-    if body is None:
-        return None
+def _customer_detail(body: dict) -> CustomerDetail:
     return CustomerDetail(
         cust_nb=body["cust_nb"], customer_name=body["customer_name"],
         email=body.get("email"), telephone=body.get("telephone"),
         city=body.get("city"), address1=body.get("address1"),
         salesman_id=body.get("salesman_id"))
+
+
+def get_customer_detail(cust_nb: str) -> CustomerDetail | None:
+    """Full detail for one customer, including salesman_id - backs the
+    backend's direct-access endpoint (GET /customers/{cust_nb}) and the
+    ownership checks on claim/reject/callback, which (unlike accept) never
+    reach catalog-service's own POST /orders check."""
+    body = _get(f"/customers/{cust_nb}")
+    return _customer_detail(body) if body is not None else None
 
 
 def assign_customer_salesman(cust_nb: str, salesman_id: str | None
@@ -184,25 +181,14 @@ def assign_customer_salesman(cust_nb: str, salesman_id: str | None
     already checked the acting salesman's role and, when salesman_id is
     set, that it names a real active Salesman row. This call itself just
     persists the assignment; catalog-service has no notion of roles."""
-    with _client() as c:
-        r = c.patch(f"/customers/{cust_nb}/salesman",
-                    json={"salesman_id": salesman_id})
-        r.raise_for_status()
-        body = r.json()
-    return CustomerDetail(
-        cust_nb=body["cust_nb"], customer_name=body["customer_name"],
-        email=body.get("email"), telephone=body.get("telephone"),
-        city=body.get("city"), address1=body.get("address1"),
-        salesman_id=body.get("salesman_id"))
+    return _customer_detail(
+        _patch(f"/customers/{cust_nb}/salesman", json={"salesman_id": salesman_id}))
 
 
 # ---- qra --------------------------------------------------------------
 
 def list_all_qra() -> list[dict]:
-    with _client() as c:
-        r = c.get("/qra/all")
-        r.raise_for_status()
-        return r.json()
+    return _get("/qra/all")
 
 
 @dataclass
@@ -236,10 +222,7 @@ def preview_qra(cust_nb: str | None, lines,
                   "qty": str(l.qty) if l.qty is not None else None,
                   "uom": l.uom} for l in lines],
     }
-    with _client() as c:
-        r = c.post("/qra/preview", json=body)
-        r.raise_for_status()
-        result = r.json()
+    result = _post("/qra/preview", json=body)
     return (
         [QraLinePreview(line_nb=p["line_nb"], unit_price=p["unit_price"],
                         is_free=p["is_free"],
@@ -298,38 +281,24 @@ def get_recent_orders(*, salesman_id: str | None = None, admin: bool = False,
     deleted once its order exists - see OrderCommitService._finalize_committed).
     salesman_id/admin: same trusted-caller contract as search_customers().
     """
-    with _client() as c:
-        r = c.get("/orders/recent",
-                  params={"salesman_id": salesman_id, "admin": admin,
-                         "limit": limit})
-        r.raise_for_status()
-        return [_order_ref(row) for row in r.json()]
+    rows = _get("/orders/recent", salesman_id=salesman_id, admin=admin, limit=limit)
+    return [_order_ref(row) for row in rows]
 
 
 def get_order(order_nb: str, order_type: str) -> OrderRef | None:
-    with _client() as c:
-        r = c.get(f"/orders/{order_nb}/{order_type}")
-        r.raise_for_status()
-        return _order_ref(r.json())
+    return _order_ref(_get(f"/orders/{order_nb}/{order_type}"))
 
 
 def find_so_by_order_nb(ref: str | None) -> OrderRef | None:
     if not ref:
         return None
-    with _client() as c:
-        r = c.get(f"/orders/by-so-nb/{ref}")
-        r.raise_for_status()
-        return _order_ref(r.json())
+    return _order_ref(_get(f"/orders/by-so-nb/{ref}"))
 
 
 def resolve_target(cust_nb: str, reference: str | None
                    ) -> tuple[OrderRef | None, str | None]:
-    with _client() as c:
-        r = c.post("/orders/resolve-target",
-                   json={"cust_nb": cust_nb, "mode": "implicit",
-                        "reference": reference})
-        r.raise_for_status()
-        body = r.json()
+    body = _post("/orders/resolve-target",
+                 json={"cust_nb": cust_nb, "mode": "implicit", "reference": reference})
     if body.get("order_nb") is None:
         return None, body.get("ambiguity")
     return _order_ref(body), None
@@ -339,12 +308,8 @@ def resolve_target_explicit(cust_nb: str, mode: str, value: str | None
                             ) -> tuple[OrderRef | None, str | None]:
     if mode != "order_nb":
         return None, "unknown_mode"
-    with _client() as c:
-        r = c.post("/orders/resolve-target",
-                   json={"cust_nb": cust_nb, "mode": "explicit",
-                        "reference": value})
-        r.raise_for_status()
-        body = r.json()
+    body = _post("/orders/resolve-target",
+                 json={"cust_nb": cust_nb, "mode": "explicit", "reference": value})
     if body.get("order_nb") is None:
         return None, body.get("ambiguity")
     return _order_ref(body), None
@@ -411,6 +376,10 @@ def create_order(*, commit_intent_id: str, order_type: str,
     the final, fully-resolved cust_nb is known - a RETURN or reorder-by-
     order-number can resolve to a different customer than the one named in
     the request.
+
+    Deliberately not routed through _post()/_get() above: those raise on
+    any non-2xx status, but a 422 here is an expected, typed outcome this
+    function must inspect and translate itself, not a transport failure.
     """
     from app.errors import (CustomerNotAuthorized, CustomerNotFound,
                             OrderAlreadyReturned, TargetOrderNotFound,
