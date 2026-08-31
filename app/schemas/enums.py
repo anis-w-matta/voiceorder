@@ -22,6 +22,13 @@ class RequestStatus(str, Enum):
     callback = "callback"
     rejected = "rejected"
     committed = "committed"
+    # Set durably (own DB transaction) right before calling
+    # catalog-service's POST /orders, so a crash mid-call leaves a
+    # recoverable trace - see OrderCommitService.commit() and
+    # app/worker.py's reconcile_stuck_commits(). Treated the same as
+    # committed/rejected everywhere a request is "already decided" -
+    # never re-enterable while a commit might be in flight for it.
+    committing = "committing"
 
 
 class MatchMethod(str, Enum):
@@ -31,3 +38,13 @@ class MatchMethod(str, Enum):
     substring = "substring"
     prior_order = "prior_order"
     manual = "manual"
+    qra_bonus = "qra_bonus"
+
+
+class QraType(str, Enum):
+    """P = substitution (buying item_buy converts the line to item_get),
+    T = bonus (buying item_buy also adds a free item_get line), B = both
+    on the same QraDetail row. See app/services/qra_engine.py."""
+    p = "P"
+    t = "T"
+    b = "B"

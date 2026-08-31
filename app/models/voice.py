@@ -15,7 +15,6 @@ class VoiceMessage(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True,
                                     autoincrement=True)
     phone_raw: Mapped[str] = mapped_column(String(50))
-    phone_e164: Mapped[str | None] = mapped_column(String(20), index=True)
     audio_path: Mapped[str] = mapped_column(Text)
     duration_sec: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
     transcript: Mapped[str | None] = mapped_column(Text)

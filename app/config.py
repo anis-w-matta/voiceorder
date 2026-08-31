@@ -16,15 +16,6 @@ class Settings(BaseSettings):
     audio_dir: str = str(_REPO_ROOT / "audio")
     default_phone_region: str = "LB"
     expected_languages: list[str] = ["en", "ar"]
-    # IANA zone used to resolve a spoken calendar-day reference ("the order
-    # from yesterday", "August 17") to a UTC instant range - see
-    # get_order_nb_from_date in app/services/prior_order.py. created_at is
-    # stored as a UTC instant (DateTime(timezone=True)); truncating it to a
-    # date via the database session's own timezone setting (which defaults
-    # to UTC and is not otherwise controlled by this app) would silently
-    # disagree with what the customer means by "day" whenever the two
-    # differ, so the day boundary is computed here instead, in this zone.
-    business_timezone: str = "Asia/Beirut"
 
     fuzzy_accept: float = 0.85
     fuzzy_suggest: float = 0.60
@@ -84,6 +75,20 @@ class Settings(BaseSettings):
     # be set: without it every endpoint (including the voice recordings at
     # /audio/{id}) is open.
     api_key: str | None = None
+
+    # catalog-service (item/customer/order_header/order_details/
+    # qra_header/qra_detail) - see app/services/catalog_client.py.
+    # catalog_api_key is sent as X-API-Key, matching that service's own
+    # require_api_key gate (its own setting, off by default like this
+    # one).
+    catalog_service_url: str = "http://127.0.0.1:8100"
+    catalog_api_key: str | None = None
+    catalog_timeout_seconds: float = 10.0
+    # How stale a "committing" PendingRequest must be before the worker's
+    # reconciliation sweep re-drives its commit - see app/worker.py's
+    # reconcile_stuck_commits(). Short: a stuck commit blocks that request
+    # from being reviewed again until it resolves.
+    commit_reconcile_stale_seconds: int = 30
 
     # Salesman auth (app/services/auth.py, app/api/auth.py). jwt_secret has
     # no default on purpose - every deployment must set its own via .env

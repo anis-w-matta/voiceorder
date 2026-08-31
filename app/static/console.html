@@ -345,9 +345,6 @@ function renderDetail(){
           <input type="text" class="item-nb" placeholder="item #" value="${l.item_nb||''}">
           <div class="conf">${l.match_method||'unmatched'}${l.match_confidence!=null?' · '+l.match_confidence.toFixed(2):''}${l.resolution_meta&&l.resolution_meta.margin!=null?' · margin '+l.resolution_meta.margin.toFixed(2):''}</div>
           ${(l.line_flags||[]).length?`<div>${l.line_flags.map(flagBadge).join(" ")}</div>`:""}
-          <label style="display:block;font-size:11px;color:var(--muted)">
-            <input type="checkbox" class="remember-alias"> Remember correction as alias?
-          </label>
         </td>
         <td><input type="text" class="item-desc" placeholder="description" value="${escapeAttr(l.item_desc||'')}"></td>
         <td><input type="number" step="0.001" class="qty" value="${l.qty!=null?l.qty:''}"></td>
@@ -517,14 +514,12 @@ async function doAccept(){
     const itemDesc = tr.querySelector(".item-desc").value.trim();
     const qty = tr.querySelector(".qty").value;
     const uom = tr.querySelector(".uom").value.trim();
-    const rememberAlias = tr.querySelector(".remember-alias").checked;
     lines.push({
       line_nb: nb,
       item_nb: itemNb || null,
       item_desc: itemDesc || null,
       qty: qty === "" ? null : qty,
       uom: uom || null,
-      remember_alias: rememberAlias,
     });
   });
   const orderType = document.getElementById("orderType").value.trim() || "SO";

@@ -1,7 +1,6 @@
-from sqlalchemy import select
-
-from app.models import Item, PendingLine, PendingRequest
+from app.models import PendingLine, PendingRequest
 from app.schemas.enums import Intent, MatchMethod
+from app.services import catalog_client
 from app.services.activity_log import log as log_activity
 from app.services.item_classifier import classify_line
 from app.services.scripted.config import (ITEM_AMBIGUITY_MARGIN,
@@ -9,7 +8,7 @@ from app.services.scripted.config import (ITEM_AMBIGUITY_MARGIN,
 from app.services.scripted.models import MatchStatus, ScriptedOrderResult
 
 
-def lines_from_prior_order(session, prior_lines, raw_text_fn):
+def lines_from_prior_order(prior_lines, raw_text_fn):
     """PendingLine rows built from a list of prior OrderDetail rows -
     shared by DraftBuilder's _from_prior (reorder) and build_return's
     full-return branch, and by commit.py's target_order_nb_override path
@@ -19,23 +18,32 @@ def lines_from_prior_order(session, prior_lines, raw_text_fn):
     rather than a DraftBuilder method since it only ever needed `session`,
     not any of DraftBuilder's other collaborators.
 
+    Drops any line the prior order recorded as a QRA free bonus
+    (is_free=True): every caller here re-runs apply_qra on the paid lines
+    this returns before commit, so carrying a previously-free line forward
+    would both re-price it as a paid item and double it up against the
+    bonus line QRA freshly computes from the paid quantity. A salesman who
+    explicitly wants that item repeated as a real paid line has to say so
+    - that lands as its own adjustment line (_merge_adjustment_lines),
+    never through this baseline copy.
+
     Looks up each item's *current* category rather than trusting the
     historical order_details snapshot, which may predate this column
     (NULL) or be stale relative to a catalogue re-categorisation.
     `raw_text_fn(order_detail)` supplies the caller-specific label
     ("[from order ...]" / "[return of order ...]").
     """
+    prior_lines = [d for d in prior_lines if not d.is_free]
     if not prior_lines:
         return []
-    items = {i.item_number: i for i in session.scalars(select(Item).where(
-        Item.item_number.in_({d.item_nb for d in prior_lines})))}
+    categories = catalog_client.get_items_batch(
+        [d.item_nb for d in prior_lines if d.item_nb])
     return [PendingLine(
         line_nb=n, raw_text=raw_text_fn(d),
         item_nb=d.item_nb, item_desc=d.item_desc, qty=d.qty, uom=d.uom,
         match_confidence=1.0, match_method=MatchMethod.prior_order.value,
         category=classify_line(
-            matched_category=items[d.item_nb].category
-            if d.item_nb in items else None,
+            matched_category=categories.get(d.item_nb),
             raw_text=d.item_desc, known_categories=[]))
         for n, d in enumerate(prior_lines, start=1)]
 
@@ -80,7 +88,7 @@ class DraftBuilder:
             return []
         prior_lines = self.prior.lines_of(target)
         return lines_from_prior_order(
-            self.s, prior_lines, lambda d: f"[from order {target.order_nb}]")
+            prior_lines, lambda d: f"[from order {target.order_nb}]")
 
     def _pending_lines_from_scripted(self, scripted: ScriptedOrderResult
                                      ) -> list[PendingLine]:
@@ -218,7 +226,7 @@ class DraftBuilder:
         if scripted.full_return:
             prior_lines = self.prior.lines_of(order_header) if order_header else []
             lines = lines_from_prior_order(
-                self.s, prior_lines,
+                prior_lines,
                 lambda d: f"[return of order {order_header.order_nb}]")
         else:
             lines = self._pending_lines_from_scripted(scripted)

@@ -66,10 +66,12 @@ class ParsedReturnOrder:
 class ParsedReorder:
     command_type: Literal["reorder"] = "reorder"
     customer_text: str = ""
-    # mode is exactly one of "last" | "date" | "order_nb", never inferred -
-    # the salesman states one of the three explicitly (spec: "3 enums").
-    mode: Literal["last", "date", "order_nb"] = "last"
-    reference: str | None = None  # date text or order number, per mode
+    # "order_nb" is the only mode left - a reorder always needs an
+    # explicit order number now (order_header dropped created_at, so
+    # "same as last time"/"the order from date X" have nothing to resolve
+    # against any more).
+    mode: Literal["order_nb"] = "order_nb"
+    reference: str | None = None  # the referenced order number
     # A reorder can also change the order while repeating it ("reorder the
     # same thing but 4 each of X instead") - empty means a plain repeat.
     items: list[ParsedItemSpan] = field(default_factory=list)

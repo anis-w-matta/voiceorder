@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_audio, get_db, get_operator, get_phone
+from app.api.deps import get_audio, get_db, get_operator
 from app.models import PendingRequest, VoiceMessage
 from app.services.activity_log import log as log_activity
 from app.services.audio_formats import AUDIO_MIME_BY_EXT
@@ -47,7 +47,6 @@ def ingest_voice(phone: str = Form(...), audio: UploadFile = File(...),
                  # opened straight away.
                  submit_mode: str | None = Form(default=None),
                  s: Session = Depends(get_db), store=Depends(get_audio),
-                 phones=Depends(get_phone),
                  operator: str = Depends(get_operator)):
     data = audio.file.read()
     if not data:
@@ -55,8 +54,7 @@ def ingest_voice(phone: str = Form(...), audio: UploadFile = File(...),
     if len(data) > MAX_BYTES:
         raise HTTPException(413, "audio too large")
     rel = store.save(data, safe_ext(audio.filename))
-    vm = VoiceMessage(phone_raw=phone, phone_e164=phones.to_e164(phone),
-                      audio_path=rel, status="received")
+    vm = VoiceMessage(phone_raw=phone, audio_path=rel, status="received")
     # Audio is always stored either way (archival/audit trail). A caller
     # that already has a transcript (the Android app's Gemini preview +
     # salesman-edited text, see RecordViewModel.kt) can skip the

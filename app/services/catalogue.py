@@ -1,11 +1,9 @@
-from sqlalchemy import select
-
-from app.models import Item
+from app.services import catalog_client
 
 
 class CatalogueService:
-    def __init__(self, session):
+    def __init__(self, session=None):
         self.s = session
 
     def all_categories(self) -> list[str]:
-        return sorted(self.s.scalars(select(Item.category).distinct()).all())
+        return catalog_client.all_item_categories()

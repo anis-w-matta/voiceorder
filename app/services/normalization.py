@@ -2,10 +2,10 @@ import re
 import unicodedata
 
 # Centralized text normalization shared by every downstream comparison
-# (extracted product text, item_alias.alias, resolver queries) so the
-# spoken side and the catalogue side are normalized identically. Callers
-# keep the original text alongside whatever this produces - normalize_text
-# never replaces raw_text/alias, it only derives a comparison-friendly copy.
+# (extracted product text, resolver queries) so the spoken side and the
+# catalogue side are normalized identically. Callers keep the original
+# text alongside whatever this produces - normalize_text never replaces
+# raw_text, it only derives a comparison-friendly copy.
 
 # Matches a bare int/decimal token (e.g. "12", "0.6") - shared by every
 # module that pulls "the numbers actually present in this text" out for a

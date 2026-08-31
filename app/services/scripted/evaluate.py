@@ -42,7 +42,7 @@ from typing import Callable
 
 from sqlalchemy.orm import Session
 
-from app.models import Customer, Item, ItemAlias
+from app.models import Customer, Item
 from app.services.scripted.models import (MatchStatus, ParsedCommand,
                                           ParseFailure)
 from app.services.scripted.resolve_order import resolve
@@ -98,8 +98,6 @@ def _seed_evaluation_catalog(session: Session) -> None:
         Item(item_number="EVLI5", item_desc="MEDICA PULL UPS LARGE 14X6",
             category="Adult Diapers"),
     ])
-    session.add(ItemAlias(item_number="EVLI1", alias="tendrex kbeer 12x4",
-                          lang="ar-latn"))
     session.flush()
 
 

@@ -28,77 +28,139 @@ from app.services.scripted.models import (ParsedItemSpan, ParsedPlaceOrder,
 
 _log = logging.getLogger(__name__)
 
-PROMPT = """You are extracting the structure of a wholesale salesman's
-spoken order command from its transcript. The transcript may mix English,
-Arabic script, and Arabizi (Latin-transliterated Arabic) - extract text
-spans exactly as they appear in the transcript, do not translate them.
+PROMPT = """You are listening to a wholesale salesman's spoken order
+command, transcribed from mixed English, Arabic script, and Arabizi
+(Latin-transliterated Arabic) speech - extract text spans exactly as they
+appear in the transcript, do not translate them. Real speech is messy:
+words get repeated, salesmen switch languages mid-sentence, correct
+themselves, add filler words, and say things in whatever order feels
+natural - not necessarily "who, then what, then how much." Understand
+what was actually meant, the way a human dispatcher who speaks all three
+languages would - don't look for one fixed sentence shape.
 
-The salesman's speech is always one of exactly three command shapes, or
-none of them:
+Every command is trying to do exactly one of these three things, or none
+of them:
 
-1. place_order: names a customer, then lists one or more items to order.
-   Each item has a description and a quantity, usually with a unit - this
-   business only orders in two units, "each" and "packets" (a close
-   variant/abbreviation like "pkt", "pack", or "ea" means the same thing).
-   Example shape: "place order for <customer> ... <item 1> quantity
-   <number> <unit> ... <item 2> quantity <number> <unit> ... the end". A
-   leading counter word before an item ("one", "two", "item one") is not
-   part of the item description - strip it.
+- place_order: start a new order for a customer, with one or more items
+  and quantities.
+- return_order: send back all or part of a previous order (identified by
+  order number, or a description like a date). If no items are named at
+  all, the whole referenced order is being returned (leave items empty).
+- reorder: repeat a previous order, identified by its order number
+  (mode=order_nb - the only mode there is; a reorder always needs an
+  explicit order number, never "my last order" or a spoken date) -
+  optionally with some items changed ("reorder order 12345 but 4 each of
+  X instead", "reorder order 12345 but drop the Z"). Extract only the
+  changed/added items; leave items empty for a plain, unmodified repeat.
+- none: small talk, an unrelated question, silence, or anything else -
+  never force-fit one of the three shapes onto unrelated speech.
 
-   The quantity always comes immediately BEFORE its unit, never after, and
-   quantity_text must always resolve to an actual number. A number is
-   sometimes misheard/transcribed as a similar-sounding word right before
-   "each"/"packets" - e.g. "to each" is really "two each" ("to" is the
-   number 2 here, not the preposition), the same way "for" can mean "four"
-   and "won" can mean "one". When the word immediately before the unit is
-   one of these, extract the number it actually sounds like, not the
-   literal word transcribed.
+For whichever shape applies, extract:
+- customer_text (place_order/reorder): the customer's name or number,
+  exactly as spoken, never corrected or guessed at.
+- order_reference (return_order/reorder): the referenced order - a
+  number or a spoken description like a date - exactly as spoken.
+- items: one (item_text, quantity_text, uom_text) triple per item
+  actually ordered, in whatever order they were said. item_text is the
+  product description exactly as spoken - do NOT correct it, resolve it
+  to what you think is the "real" product name, or invent one that fits
+  better; a separate system matches this text against the actual
+  catalogue, so your only job is finding the boundary of what was said.
+  A leading counter word before an item ("one", "two", "item one") is
+  not part of the item description - strip it (see judgment call 3
+  below for the different case of "item"/"code" followed by the
+  product's actual catalogue number). quantity_text is the
+  spoken number (digits or a number word) exactly as said, resolved to
+  an actual number - a number is sometimes misheard/transcribed as a
+  similar-sounding word right next to its unit (e.g. "to each" is really
+  "two each", the same way "for" can mean "four" and "won" can mean
+  "one"); when that happens, extract the number it actually sounds like,
+  not the literal word transcribed. uom_text is the spoken unit word
+  exactly as said, or empty string if none was mentioned - this business
+  only orders in "each" or "packets" (a close variant/abbreviation of
+  either counts).
 
-   Every real item has an explicit unit word ("each"/"packets"/a variant)
-   spoken somewhere in its own span. Product names are frequently followed
-   by a trailing number or pack-size code with no unit attached to it at
-   all (e.g. "tendrex adult large 12x4", "napkins 200x2") - that trailing
-   code is part of item_text, never a second item. Only start a new item
-   when you reach the next number that is immediately followed by
-   "each"/"packets"/a variant; a bare number or number-x-number pattern
-   with no unit word right after it is never itself an item boundary.
+Two judgment calls come up often enough to call out:
 
-2. return_order: references a previous order to return - either by order
-   number, or a description of which order (e.g. a date). Optionally
-   followed by specific items being returned; if no items are named at
-   all, the whole referenced order is being returned (leave items empty).
+1. A bare number attached to a customer-referring word ("for", "to",
+   Arabic "la"/"ل-") almost always identifies the CUSTOMER, not an
+   order. A number attached to "order"/"reorder"/"repeat" (English or
+   Arabic) almost always identifies an ORDER being referenced or
+   repeated. The same digits can show up in a transcript meaning either
+   one - decide from the word they're attached to, not from "order"
+   merely appearing somewhere nearby. When nothing in the sentence
+   actually signals "this is a repeat/return of something" (no
+   "again"/"same"/"reorder"/"return"/reference to a past order), treat
+   it as a new place_order rather than guessing reorder or return - a
+   new order is the default case; a repeat or return needs its own real
+   signal, not just the presence of the word "order".
 
-3. reorder: names a customer and says to repeat an order - either "the
-   same order" / "last time" (mode=last), a specific past order number
-   (mode=order_nb), or an order from a spoken date (mode=date). The
-   salesman may also change the order while repeating it ("reorder the
-   same thing but 4 each of X instead", "repeat my last order, add 2
-   packets of Y", "reorder order 12345 but drop the Z") - when they do,
-   extract each changed/added item the same way place_order items are
-   extracted (item_text/quantity_text/uom_text). Leave items empty for a
-   plain, unmodified repeat.
+2. Item and quantity don't have to appear in "item, then quantity+unit"
+   order - they're often said the other way round, or split apart by
+   filler or a self-correction. Match each quantity+unit to whichever
+   item it actually describes by meaning, not by position in the
+   sentence, and use a corrected value over whatever was said first.
 
-Extract each item as a separate (item_text, quantity_text, uom_text)
-triple. item_text is the product description exactly as spoken - do NOT
-correct it, resolve it to what you think is the "real" product name, or
-invent one that fits better; a separate system matches this text against
-the actual catalogue, so your only job is finding the boundary of what was
-said. quantity_text is the spoken number (digits or a number word) exactly
-as said. uom_text is the spoken unit word exactly as said, or an empty
-string if no unit was mentioned.
+3. "Item"/"code"/"number"/"SKU" (English or Arabic, e.g. "رقم") followed
+   by a number is ambiguous the same way customer numbers are, and
+   splits into two different things depending on what the number looks
+   like. A small number that reads as a position in the list ("item
+   one", "item two") is the leading-counter case already covered above -
+   strip it. A longer number that reads as the product's own catalogue number
+   ("item 165227", "code 165227") is the product identifier itself -
+   extract just the number as item_text, with the wrapper word stripped,
+   the same way a customer number gets extracted without "for"/"la"
+   attached. Don't keep "item"/"code"/"el item" glued to the digits -
+   the system matching item_text against the catalogue looks up a bare
+   number as an exact product code first, and a leftover wrapper word
+   breaks that lookup.
 
-customer_text (place_order/reorder) and order_reference (return_order's
-referenced order, or reorder's order_nb/date reference) are likewise
-extracted exactly as spoken, never corrected or guessed at.
+Also rate your own confidence (0.0-1.0): how sure you are you understood
+the command correctly, not whether the order itself makes sense. When you
+had to make a judgment call like the ones above with little to go on,
+that should pull your confidence down.
 
-If the transcript does not describe any of these three command shapes at
-all (e.g. small talk, an unrelated question, silence), return
-command_type="none" and leave every other field empty - never force-fit
-one of the three shapes onto unrelated speech.
+The examples below show how to reason about messy input, not phrases to
+pattern-match against - real transcripts will rarely look exactly like
+these:
 
-Also rate your own confidence (0.0-1.0) in this extraction, based on how
-clearly the command structure could be identified - not on whether the
-order itself makes sense.
+- "place order for Sara Supermarket, two boxes of chips each, five
+  packets of napkins" -> place_order, customer "Sara Supermarket",
+  items: [chips/2/each, napkins/5/packets].
+
+- "بدي حط أوردر لـ 45000، فيها 3 عبوات من الشيبس الكبير" ("I want to
+  place an order for 45000, in it 3 packets of the big chips") ->
+  place_order, customer_text "45000" (attached to "la", so it's the
+  customer, not an order reference), items: [item_text "الشيبس الكبير",
+  quantity_text "3", uom_text "عبوات"] - the quantity+unit was said
+  before the item description, but it still belongs to that one item.
+
+- "reorder order number 12345 but add 2 each of Pepsi" -> reorder, mode
+  "order_nb", order_reference "12345", items: [Pepsi/2/each] - here
+  "order number" is the explicit repeat signal that's missing in the
+  example below.
+
+- "hot order la 58466 fiyo 7 packets men el item 165227" -> nothing here
+  says "repeat"/"reorder"/"same as before" - "order la 58466" reads as
+  "an order for 58466", not a reference to an existing order, so 58466
+  is the customer, not an order number to look up: place_order,
+  customer_text "58466", items: [item_text "165227" (judgment call 3 -
+  165227 reads as the product's own catalogue number, not a position in
+  a list, so "el item" is stripped and just the number is kept),
+  quantity_text "7", uom_text "packets"] (confidence should be on the
+  lower side here since the item was identified only by a bare number,
+  not a product name - not because the command shape itself is
+  unclear).
+
+- "return order 9821, the customer doesn't want it" -> return_order,
+  order_reference "9821", items: [].
+
+- "place order for customer sixty triple two, uh two packs - no wait,
+  three packs of the red juice" -> place_order, customer_text "customer
+  sixty triple two", items: [red juice/3/packs] - the corrected
+  quantity, not the first one said.
+
+- "hey what time do we close today" -> none, every other field empty.
 
 Return only the structured result in the requested format - no
 explanations."""
@@ -109,11 +171,11 @@ class _GeminiItem(BaseModel):
         "the item/product description exactly as spoken - never "
         "corrected, resolved, or invented"))
     quantity_text: str = Field(description=(
-        "the spoken quantity, always immediately before its unit and "
-        "always resolved to an actual number (digits or a number word) - "
-        "if a homophone was transcribed right before the unit (e.g. 'to' "
-        "before 'each'), extract the number it sounds like ('two'), not "
-        "the literal word"))
+        "the spoken quantity for this item, wherever it was said relative "
+        "to the item description - always resolved to an actual number "
+        "(digits or a number word). If a homophone was transcribed right "
+        "next to the unit (e.g. 'to each'), extract the number it sounds "
+        "like ('two'), not the literal word"))
     uom_text: str = Field(description=(
         "the unit of measure exactly as said, or empty string if none was "
         "said - this business only uses \"each\" and \"packets\" (or a "
@@ -126,12 +188,12 @@ class _GeminiCommand(BaseModel):
         "customer name/number exactly as spoken - place_order/reorder only"))
     order_reference: str = Field(default="", description=(
         "the referenced order (number or spoken date) for return_order, "
-        "or reorder's order_nb/date reference"))
+        "or reorder's order number"))
     items: list[_GeminiItem] = Field(default_factory=list)
     # Gemini's structured-output schema rejects an empty string as an enum
     # member ("enum[n]: cannot be empty") - null (not "") is how "not a
-    # reorder, or reorder mode wasn't stated" is represented.
-    reorder_mode: Literal["last", "date", "order_nb"] | None = None
+    # reorder, or no order number was stated" is represented.
+    reorder_mode: Literal["order_nb"] | None = None
     confidence: float = Field(default=0.0, description=(
         "0.0-1.0 self-rated confidence in this extraction"))
 
@@ -218,16 +280,11 @@ def _to_parsed(result: _GeminiCommand, transcript: str
         # and a reorder that only gives an order number ("reorder order
         # 12345 but...") has enough to work with on its own.
         customer_text = result.customer_text.strip()
-        mode = result.reorder_mode
-        if mode not in ("last", "date", "order_nb"):
-            return ParseFailure(ParseError.REORDER_MODE_NOT_FOUND,
-                                "no reorder mode extracted", transcript)
         reference = result.order_reference.strip() or None
-        if mode != "last" and not reference:
+        if result.reorder_mode != "order_nb" or not reference:
             return ParseFailure(ParseError.REORDER_MODE_NOT_FOUND,
-                                f"reorder mode {mode!r} requires a reference",
-                                transcript)
-        return ParsedReorder(customer_text=customer_text, mode=mode,
+                                "no reorder order number extracted", transcript)
+        return ParsedReorder(customer_text=customer_text, mode="order_nb",
                              reference=reference, items=_to_items(result.items))
 
     return ParseFailure(

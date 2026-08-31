@@ -33,6 +33,14 @@ class PendingRequest(Base):
     decided_by: Mapped[str | None] = mapped_column(String(100))
     decision_note: Mapped[str | None] = mapped_column(Text)
     committed_order_nb: Mapped[str | None] = mapped_column(String(30))
+    # The idempotency key OrderCommitService.commit() sends to
+    # catalog-service's POST /orders - generated and persisted (own
+    # transaction, status="committing") right before that call, so a
+    # crash mid-call leaves a recoverable trace: app/worker.py's
+    # reconcile_stuck_commits() re-sends this same id and gets the same
+    # order back rather than creating a duplicate.
+    commit_intent_id: Mapped[str | None] = mapped_column(
+        String(36), unique=True, index=True)
 
     lines: Mapped[list["PendingLine"]] = relationship(
         back_populates="request", cascade="all, delete-orphan",

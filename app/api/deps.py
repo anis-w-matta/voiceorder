@@ -10,10 +10,8 @@ from app.db import session_scope
 from app.models import Salesman
 from app.services.audio_store import AudioStore
 from app.services.auth import decode_token
-from app.services.phone import PhoneNormaliser
 
 _audio = AudioStore()
-_phone = PhoneNormaliser()
 
 
 def get_db() -> Iterator[Session]:
@@ -23,10 +21,6 @@ def get_db() -> Iterator[Session]:
 
 def get_audio() -> AudioStore:
     return _audio
-
-
-def get_phone() -> PhoneNormaliser:
-    return _phone
 
 
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
