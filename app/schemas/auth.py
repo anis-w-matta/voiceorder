@@ -11,6 +11,7 @@ class RegisterIn(BaseModel):
     password: str
     name: str
     email: str | None = None
+    role: str = "salesman"
 
 
 class ChangePasswordIn(BaseModel):
@@ -23,12 +24,17 @@ class AccountUpdateIn(BaseModel):
     email: str | None = None
 
 
+class SalesmanUpdateIn(BaseModel):
+    is_active: bool | None = None
+
+
 class SalesmanOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     login_id: str
     name: str
     email: str | None
     role: str = "salesman"
+    is_active: bool = True
 
 
 class LoginOut(SalesmanOut):

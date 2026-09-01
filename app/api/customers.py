@@ -65,11 +65,17 @@ def get_customer(cust_nb: str,
 
 @router.get("/salesmen", response_model=list[SalesmanOut],
            dependencies=[Depends(require_admin)])
-def list_salesmen(s: Session = Depends(get_db)):
-    """Admin-only - backs the customer-assignment picker (there's no other
-    reason a client needs the full roster of login ids)."""
-    return list(s.scalars(select(Salesman).where(Salesman.is_active.is_(True))
-                          .order_by(Salesman.name)))
+def list_salesmen(include_inactive: bool = Query(default=False),
+                  s: Session = Depends(get_db)):
+    """Admin-only - backs both the customer-assignment picker (which only
+    ever wants active salesmen to assign to) and the admin app's salesman
+    roster screen (which also needs to see deactivated accounts, to
+    reactivate them - include_inactive=true). Default preserves the
+    picker's existing behavior."""
+    q = select(Salesman).order_by(Salesman.name)
+    if not include_inactive:
+        q = q.where(Salesman.is_active.is_(True))
+    return list(s.scalars(q))
 
 
 @router.patch("/customers/{cust_nb}/salesman", response_model=CustomerDetailOut,
