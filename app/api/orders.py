@@ -29,5 +29,6 @@ def recent_orders(limit: int = Query(30, le=100),
         order_nb=o.order_nb, order_type=o.order_type,
         cust_nb=o.cust_nb, customer_name=o.customer_name,
         lines=[RecentOrderLineOut(item_nb=l.item_nb, item_desc=l.item_desc,
-                                  qty=l.qty, uom=l.uom) for l in o.lines])
+                                  qty=l.qty, uom=l.uom, is_free=l.is_free)
+              for l in o.lines])
            for o in orders]

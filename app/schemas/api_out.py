@@ -74,6 +74,7 @@ class RecentOrderLineOut(BaseModel):
     item_desc: str
     qty: Decimal
     uom: str | None
+    is_free: bool = False
 
 
 class RecentOrderOut(BaseModel):
