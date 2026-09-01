@@ -68,15 +68,11 @@ class OrderCommitService:
             select(PendingRequest).where(PendingRequest.id == request_id)
             .with_for_update()).scalar_one_or_none()
         if req is None:
-            # Covers both "never existed" and "already committed": a
-            # committed request's row is deleted once its order exists
-            # (see _finalize_committed below), so a retried/duplicate
-            # accept() on it lands here rather than an AlreadyCommitted
-            # branch - there's no row left to report a status on.
             raise RequestNotFound(request_id)
 
         if req.status in (RequestStatus.rejected.value,
-                         RequestStatus.committing.value):
+                         RequestStatus.committing.value,
+                         RequestStatus.committed.value):
             log_standalone("update_rejected",
                           f"update attempt on request {req.id} refused: "
                           f"status is {req.status!r}, not in buffer state",
@@ -220,15 +216,14 @@ def _finalize_committed(session, req, result, operator, order_type):
     reconcile_stuck_commit()'s crash-recovery path below, since both end
     the same way once catalog-service has confirmed the order exists.
 
-    The PendingRequest - and its PendingLine rows, via
-    pending_request_line's ondelete=CASCADE - is deleted here rather than
-    marked "committed" and kept around: once an order is durably real in
-    catalog-service's order_header/order_details, that's the single source
-    of truth for it, not a lingering buffer row. activity_log keeps its
-    own independent snapshot (no FK to pending_request, so nothing here
-    touches the audit trail), and GET /orders/recent now reads committed
-    orders straight from catalog-service instead of this table - see
-    app/api/orders.py.
+    The PendingRequest (and its PendingLine rows) is marked "committed" and
+    kept, not deleted: catalog-service's order_header/order_details remains
+    the single source of truth for the order itself, but this row is the
+    only place AI confidence/edit history and the request-to-order lineage
+    ever lived, and analytics needs both to survive past commit (see
+    vendo-intelligence-web/docs/audit/06_data_limitations.md #3/#7 and
+    08_required_backend_changes.md #1). committed_order_nb was previously a
+    dead field on this model - this is the first place it's actually set.
     """
     req_id = req.id
     cust_nb = result.cust_nb or req.cust_nb
@@ -238,7 +233,8 @@ def _finalize_committed(session, req, result, operator, order_type):
                 order_nb=result.order_nb,
                 details={"operator": operator, "order_type": order_type,
                          "reconciled": operator == "worker-reconciliation"})
-    session.delete(req)
+    req.status = RequestStatus.committed.value
+    req.committed_order_nb = result.order_nb
     session.flush()
 
 

@@ -30,13 +30,14 @@ def list_queue(status: str | None = None, flag: str | None = Query(None),
         q = q.where(PendingRequest.status == status)
     else:
         # A "queue" is pending work by default - once a request is decided
-        # (rejected/committing) it shouldn't keep showing up here or as the
-        # Request screen's "most recent" fallback. ?status=rejected is still
-        # a real history view; ?status=committed will always come back empty
-        # now - a committed request's row is deleted once its order exists
-        # (see OrderCommitService._finalize_committed), so there's nothing
-        # left in this table to filter for. GET /orders/recent is the
-        # history view for committed orders now.
+        # (rejected/committing/committed) it shouldn't keep showing up here
+        # or as the Request screen's "most recent" fallback. ?status=rejected
+        # and ?status=committed are still real history views: a committed
+        # request's row is kept (status="committed", committed_order_nb set)
+        # rather than deleted, so its AI/edit history and its link to the
+        # resulting order both survive - see
+        # OrderCommitService._finalize_committed. GET /orders/recent remains
+        # the history view sourced from catalog-service's own order data.
         q = q.where(PendingRequest.status.notin_(DECIDED))
     if flag:
         # Filter in SQL (jsonb @> '["flag"]'). Doing this in Python after the
@@ -117,6 +118,7 @@ def get_request(req_id: int, s: Session = Depends(get_db),
         audio_url=f"/audio/{r.voice_message_id}",
         segments=r.voice.segments or [],
         target_order_nb=r.target_order_nb, assigned_to=r.assigned_to,
+        committed_order_nb=r.committed_order_nb,
         lines=lines_out,
         qra_bonus_lines=[
             QraBonusLineOut(item_nb=b.item_nb, item_desc=b.item_desc,

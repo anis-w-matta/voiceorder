@@ -8,8 +8,8 @@ from fastapi.responses import FileResponse
 
 from fastapi import Depends
 
-from app.api import (activity, auth, customers, ingest, items, orders, qra,
-                     queue, review)
+from app.api import (activity, analytics, auth, customers, ingest, items,
+                     orders, qra, queue, review)
 from app.api.deps import require_api_key
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -38,6 +38,7 @@ app.include_router(queue.router, dependencies=_guard)
 app.include_router(review.router, dependencies=_guard)
 app.include_router(activity.router, dependencies=_guard)
 app.include_router(auth.router, dependencies=_guard)
+app.include_router(analytics.router, dependencies=_guard)
 
 
 @app.get("/health")

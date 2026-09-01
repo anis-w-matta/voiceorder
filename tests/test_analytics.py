@@ -1,0 +1,126 @@
+"""VeNdO Intelligence Phase 3 aggregation queries - see
+app/services/analytics.py. status_counts/backlog/turnaround/rejection all
+scope to whatever PendingRequest rows exist today, which (since Phase 2)
+includes committed ones going forward - see the module docstring there.
+"""
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+import pytest
+
+from app.models import PendingLine, PendingRequest, VoiceMessage
+from app.schemas.enums import RequestStatus
+from app.services import analytics
+
+
+@pytest.fixture
+def voice_message(db_session):
+    vm = VoiceMessage(phone_raw="+96170000000", audio_path="test.wav",
+                      status="processed")
+    db_session.add(vm)
+    db_session.flush()
+    return vm
+
+
+def _request(db_session, voice_message, *, status, created_at=None,
+            decided_at=None, assigned_to=None, cust_nb="58466",
+            lines=((1, 0.9, False),)):
+    kwargs = {}
+    if created_at is not None:
+        kwargs["created_at"] = created_at
+    req = PendingRequest(voice_message_id=voice_message.id, cust_nb=cust_nb,
+                        primary_intent="add_order", status=status,
+                        assigned_to=assigned_to, decided_at=decided_at,
+                        **kwargs)
+    for line_nb, confidence, edited in lines:
+        req.lines.append(PendingLine(
+            line_nb=line_nb, raw_text="x", match_confidence=confidence,
+            operator_edited=edited, item_nb="I1", qty=Decimal("1"), uom="EA"))
+    db_session.add(req)
+    db_session.flush()
+    return req
+
+
+class TestBacklog:
+    def test_counts_only_open_statuses_and_buckets_age(
+            self, db_session, voice_message):
+        now = datetime.now(timezone.utc)
+        _request(db_session, voice_message, status=RequestStatus.new.value,
+                 created_at=now - timedelta(hours=2))
+        _request(db_session, voice_message, status=RequestStatus.in_review.value,
+                 created_at=now - timedelta(days=5))
+        _request(db_session, voice_message, status=RequestStatus.rejected.value,
+                 created_at=now - timedelta(hours=1), decided_at=now)
+
+        r = analytics.backlog_summary(db_session, analytics.RequestsFilter())
+        assert r.total == 2
+        assert r.age_buckets["0-1d"] == 1
+        assert r.age_buckets["3-7d"] == 1
+
+
+class TestTurnaround:
+    def test_computes_percentiles_over_decided_requests_only(
+            self, db_session, voice_message):
+        now = datetime.now(timezone.utc)
+        _request(db_session, voice_message, status=RequestStatus.rejected.value,
+                 created_at=now - timedelta(hours=2), decided_at=now)
+        _request(db_session, voice_message, status=RequestStatus.new.value,
+                 created_at=now - timedelta(hours=2))
+
+        r = analytics.turnaround_summary(db_session, analytics.RequestsFilter())
+        assert r.sample_size == 1
+        assert r.median_seconds == pytest.approx(7200, rel=0.05)
+
+    def test_empty_sample_reports_none_not_zero(self, db_session):
+        r = analytics.turnaround_summary(
+            db_session, analytics.RequestsFilter(cust_nb="no-such-customer"))
+        assert r.sample_size == 0
+        assert r.median_seconds is None
+
+
+class TestRejection:
+    def test_rate_over_decided_population(self, db_session, voice_message):
+        now = datetime.now(timezone.utc)
+        _request(db_session, voice_message, status=RequestStatus.rejected.value,
+                 decided_at=now)
+        _request(db_session, voice_message, status=RequestStatus.committed.value,
+                 decided_at=now)
+        _request(db_session, voice_message, status=RequestStatus.new.value)
+
+        r = analytics.rejection_summary(db_session, analytics.RequestsFilter())
+        assert r.sample_size == 2  # new (undecided) excluded
+        assert r.rejection_rate == pytest.approx(0.5)
+
+
+class TestAiQuality:
+    def test_correction_rate_by_confidence_bucket(self, db_session, voice_message):
+        _request(db_session, voice_message, status=RequestStatus.new.value,
+                 lines=[(1, 0.3, True), (2, 0.97, False), (3, 0.97, False)])
+
+        r = analytics.ai_quality_summary(db_session, analytics.RequestsFilter())
+        assert r.reviewed_lines == 3
+        assert r.edited_lines == 1
+        by_bucket = {b.bucket: b for b in r.by_confidence_bucket}
+        assert by_bucket["low"].sample_size == 1
+        assert by_bucket["low"].correction_rate == 1.0
+        assert by_bucket["very_high"].sample_size == 2
+        assert by_bucket["very_high"].correction_rate == 0.0
+
+
+class TestSalesmenRequestMetrics:
+    def test_grouped_by_assigned_to(self, db_session, voice_message):
+        now = datetime.now(timezone.utc)
+        _request(db_session, voice_message, status=RequestStatus.rejected.value,
+                 assigned_to="sm_a", decided_at=now)
+        _request(db_session, voice_message, status=RequestStatus.committed.value,
+                 assigned_to="sm_a", decided_at=now)
+        _request(db_session, voice_message, status=RequestStatus.committed.value,
+                 assigned_to="sm_b", decided_at=now)
+
+        r = analytics.salesmen_request_metrics(
+            db_session, analytics.RequestsFilter())
+        by_sm = {x.salesman_id: x for x in r}
+        assert by_sm["sm_a"].request_count == 2
+        assert by_sm["sm_a"].rejection_rate == pytest.approx(0.5)
+        assert by_sm["sm_b"].request_count == 1
+        assert by_sm["sm_b"].rejection_rate == pytest.approx(0.0)

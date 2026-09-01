@@ -139,8 +139,75 @@ class RequestDetail(BaseModel):
     segments: list[TranscriptSegment] = []
     target_order_nb: str | None
     assigned_to: str | None
+    committed_order_nb: str | None = None
     lines: list[LineOut]
     qra_bonus_lines: list[QraBonusLineOut] = []
+
+
+# ---- analytics (VeNdO Intelligence, Phase 3) ------------------------------
+# No financial fields anywhere below - only request/backlog/turnaround/
+# rejection/AI-quality counts.
+
+class StatusCountOut(BaseModel):
+    status: RequestStatus
+    count: int
+
+
+class BacklogSummaryOut(BaseModel):
+    total: int
+    oldest_created_at: datetime | None = None
+    age_buckets: dict[str, int]
+
+
+class TurnaroundSummaryOut(BaseModel):
+    sample_size: int
+    median_seconds: float | None = None
+    avg_seconds: float | None = None
+    p75_seconds: float | None = None
+    p90_seconds: float | None = None
+    p95_seconds: float | None = None
+
+
+class RejectionSummaryOut(BaseModel):
+    sample_size: int
+    rejection_rate: float | None = None
+    previous_period_rejection_rate: float | None = None
+
+
+class VolumePointOut(BaseModel):
+    day: datetime
+    status: RequestStatus
+    count: int
+
+
+class RequestsSummaryOut(BaseModel):
+    status_counts: list[StatusCountOut]
+    backlog: BacklogSummaryOut
+    turnaround: TurnaroundSummaryOut
+    rejection: RejectionSummaryOut
+    volume_over_time: list[VolumePointOut]
+
+
+class ConfidenceBucketStatOut(BaseModel):
+    bucket: str
+    sample_size: int
+    correction_rate: float | None = None
+
+
+class AiQualitySummaryOut(BaseModel):
+    reviewed_lines: int
+    edited_lines: int
+    overall_correction_rate: float | None = None
+    low_confidence_count: int
+    by_confidence_bucket: list[ConfidenceBucketStatOut]
+
+
+class SalesmanRequestMetricsOut(BaseModel):
+    salesman_id: str
+    request_count: int
+    rejection_rate: float | None = None
+    median_turnaround_seconds: float | None = None
+    ai_correction_rate: float | None = None
 
 
 class ActivityLogOut(BaseModel):

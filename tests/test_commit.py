@@ -14,7 +14,7 @@ from app.models import PendingLine, PendingRequest, VoiceMessage
 from app.schemas.enums import RequestStatus
 from app.services import catalog_client
 from app.services.catalog_client import CommitTransientError
-from app.services.commit import OrderCommitService
+from app.services.commit import OrderCommitService, reconcile_stuck_commit
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ def _fake_create_order_result(**overrides):
 
 
 class TestCommitSuccess:
-    def test_successful_commit_deletes_pending_request_and_returns_result(
+    def test_successful_commit_marks_request_committed_and_sets_order_nb(
             self, db_session, pending_request, monkeypatch):
         result = _fake_create_order_result()
         monkeypatch.setattr(catalog_client, "create_order",
@@ -58,7 +58,26 @@ class TestCommitSuccess:
 
         assert out is result
         db_session.expire_all()
-        assert db_session.get(PendingRequest, pending_request.id) is None
+        req = db_session.get(PendingRequest, pending_request.id)
+        # The row is kept, not deleted - AI confidence/edit history and the
+        # request-to-order link both need to survive commit for analytics
+        # (see vendo-intelligence-web/docs/audit/06_data_limitations.md #3).
+        assert req is not None
+        assert req.status == RequestStatus.committed.value
+        assert req.committed_order_nb == result.order_nb
+        assert len(req.lines) == 1
+
+    def test_retried_accept_on_already_committed_request_is_rejected(
+            self, db_session, pending_request, monkeypatch):
+        monkeypatch.setattr(catalog_client, "create_order",
+                            lambda **kwargs: _fake_create_order_result())
+
+        svc = OrderCommitService(db_session)
+        svc.commit(pending_request.id, "SO", line_edits=[], operator="sm1")
+
+        with pytest.raises(RequestNotReviewable):
+            svc.commit(pending_request.id, "SO", line_edits=[],
+                      operator="sm1")
 
     def test_successful_commit_passes_acting_identity_never_client_supplied(
             self, db_session, pending_request, monkeypatch):
@@ -156,3 +175,41 @@ class TestCommitFailureHandling:
         assert req.status == original_status
         assert req.commit_intent_id is None
         assert req.decided_at is None
+
+
+class TestReconciliation:
+    """reconcile_stuck_commit() - app/worker.py's crash-recovery sweep for
+    a request left in "committing" by an interrupted commit() call. Shares
+    _finalize_committed() with the normal accept path, so a reconciled
+    commit must end up in the same committed/committed_order_nb state -
+    the request/order lineage a reconciled commit produces matters just as
+    much for analytics as one that never got interrupted."""
+
+    def test_successful_reconciliation_marks_request_committed(
+            self, db_session, pending_request, monkeypatch):
+        # Get the request stuck in "committing" with a real replay payload,
+        # the same way test_transient_error_... above does.
+        monkeypatch.setattr(
+            catalog_client, "create_order",
+            lambda **kwargs: (_ for _ in ()).throw(
+                CommitTransientError("catalog-service unreachable")))
+        svc = OrderCommitService(db_session)
+        with pytest.raises(CommitTransientError):
+            svc.commit(pending_request.id, "SO", line_edits=[],
+                      operator="sm1")
+        db_session.expire_all()
+        req = db_session.get(PendingRequest, pending_request.id)
+        assert req.status == RequestStatus.committing.value
+
+        result = _fake_create_order_result()
+        monkeypatch.setattr(catalog_client, "create_order",
+                            lambda **kwargs: result)
+
+        resolved = reconcile_stuck_commit(db_session, pending_request.id)
+
+        assert resolved is True
+        db_session.expire_all()
+        req = db_session.get(PendingRequest, pending_request.id)
+        assert req is not None
+        assert req.status == RequestStatus.committed.value
+        assert req.committed_order_nb == result.order_nb

@@ -52,11 +52,6 @@ def accept(req_id: int, body: AcceptIn, s: Session = Depends(get_db),
                        body.removed_line_nbs, body.cust_nb,
                        body.target_order_nb, acting_is_admin=salesman.is_admin)
     except RequestNotFound:
-        # Also covers a retried/duplicate accept on a request that's
-        # already committed: its row no longer exists once its order does
-        # (see OrderCommitService._finalize_committed), so there's no
-        # "already committed as X" status left to report - just 404, same
-        # as a request that never existed.
         raise HTTPException(404, "no such request")
     except CustomerNotFound:
         raise HTTPException(
