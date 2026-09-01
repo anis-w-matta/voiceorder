@@ -109,6 +109,7 @@ class TestRejection:
 
 class TestAiQuality:
     def test_correction_rate_by_confidence_bucket(self, db_session, voice_message):
+        # Phase 11 bucket boundaries: <60%, 60-80%, 80-90%, 90%+.
         _request(db_session, voice_message, status=RequestStatus.new.value,
                  lines=[(1, 0.3, True), (2, 0.97, False), (3, 0.97, False)])
 
@@ -116,10 +117,50 @@ class TestAiQuality:
         assert r.reviewed_lines == 3
         assert r.edited_lines == 1
         by_bucket = {b.bucket: b for b in r.by_confidence_bucket}
-        assert by_bucket["low"].sample_size == 1
-        assert by_bucket["low"].correction_rate == 1.0
-        assert by_bucket["very_high"].sample_size == 2
-        assert by_bucket["very_high"].correction_rate == 0.0
+        assert by_bucket["under_60"].sample_size == 1
+        assert by_bucket["under_60"].correction_rate == 1.0
+        assert by_bucket["90_plus"].sample_size == 2
+        assert by_bucket["90_plus"].correction_rate == 0.0
+
+    def test_hotspots_by_item_respect_minimum_sample_size(self, db_session, voice_message):
+        _request(db_session, voice_message, status=RequestStatus.new.value,
+                 lines=[(1, 0.9, True)])  # item I1, but only 1 line - below min sample
+        r = analytics.ai_quality_by_item(db_session, analytics.RequestsFilter(),
+                                         min_sample_size=3)
+        assert r == []
+
+        for _ in range(3):
+            _request(db_session, voice_message, status=RequestStatus.new.value,
+                     lines=[(1, 0.9, True)])
+        r = analytics.ai_quality_by_item(db_session, analytics.RequestsFilter(),
+                                         min_sample_size=3)
+        by_item = {x.item_nb: x for x in r}
+        assert by_item["I1"].sample_size == 4
+        assert by_item["I1"].correction_rate == 1.0
+
+    def test_hotspots_by_intent(self, db_session, voice_message):
+        req = _request(db_session, voice_message, status=RequestStatus.new.value,
+                       lines=[(1, 0.9, True), (2, 0.9, False)])
+        req.primary_intent = "add_order"
+        db_session.flush()
+
+        r = analytics.ai_quality_by_intent(db_session, analytics.RequestsFilter())
+        by_intent = {x.intent: x for x in r}
+        assert by_intent["add_order"].sample_size == 2
+        assert by_intent["add_order"].correction_rate == pytest.approx(0.5)
+
+    def test_trend_buckets_by_month(self, db_session, voice_message):
+        req1 = _request(db_session, voice_message, status=RequestStatus.new.value,
+                        created_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
+                        lines=[(1, 0.9, True)])
+        req2 = _request(db_session, voice_message, status=RequestStatus.new.value,
+                        created_at=datetime(2026, 2, 3, tzinfo=timezone.utc),
+                        lines=[(1, 0.9, False)])
+
+        r = analytics.ai_quality_trend(db_session, analytics.RequestsFilter())
+        by_bucket = {x.bucket: x for x in r}
+        assert by_bucket["2026-01"].correction_rate == 1.0
+        assert by_bucket["2026-02"].correction_rate == 0.0
 
 
 class TestSalesmenRequestMetrics:

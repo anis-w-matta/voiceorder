@@ -7,10 +7,11 @@ from app.models import Salesman
 from app.schemas.api_out import (ActivitySummaryOut, AiQualitySummaryOut,
                                  BacklogSummaryOut, ConfidenceBucketStatOut,
                                  EventTypeCountOut, HourCountOut,
-                                 RejectionSummaryOut, RequestsSummaryOut,
-                                 SalesmanRequestMetricsOut, StatusCountOut,
-                                 TurnaroundSummaryOut, VolumePointOut,
-                                 ActivityVolumePointOut)
+                                 IntentQualityStatOut, ItemQualityStatOut,
+                                 QualityTrendPointOut, RejectionSummaryOut,
+                                 RequestsSummaryOut, SalesmanRequestMetricsOut,
+                                 StatusCountOut, TurnaroundSummaryOut,
+                                 VolumePointOut, ActivityVolumePointOut)
 from app.services import analytics
 
 router = APIRouter(prefix="/admin/analytics", tags=["analytics"])
@@ -55,6 +56,36 @@ def ai_quality_summary(date_from: datetime | None = None,
         low_confidence_count=r.low_confidence_count,
         by_confidence_bucket=[ConfidenceBucketStatOut(**vars(x))
                               for x in r.by_confidence_bucket])
+
+
+@router.get("/ai-quality-by-item", response_model=list[ItemQualityStatOut])
+def ai_quality_by_item(date_from: datetime | None = None, date_to: datetime | None = None,
+                       salesman_id: str | None = None, cust_nb: str | None = None,
+                       status: str | None = None, intent: str | None = None,
+                       min_sample_size: int = 3, s=Depends(get_db),
+                       _admin: Salesman = Depends(require_admin)):
+    r = analytics.ai_quality_by_item(
+        s, _filter(date_from, date_to, salesman_id, cust_nb, status, intent),
+        min_sample_size)
+    return [ItemQualityStatOut(**vars(x)) for x in r]
+
+
+@router.get("/ai-quality-by-intent", response_model=list[IntentQualityStatOut])
+def ai_quality_by_intent(date_from: datetime | None = None, date_to: datetime | None = None,
+                         salesman_id: str | None = None, cust_nb: str | None = None,
+                         s=Depends(get_db), _admin: Salesman = Depends(require_admin)):
+    r = analytics.ai_quality_by_intent(
+        s, _filter(date_from, date_to, salesman_id, cust_nb, None, None))
+    return [IntentQualityStatOut(**vars(x)) for x in r]
+
+
+@router.get("/ai-quality-trend", response_model=list[QualityTrendPointOut])
+def ai_quality_trend(date_from: datetime | None = None, date_to: datetime | None = None,
+                     salesman_id: str | None = None, cust_nb: str | None = None,
+                     s=Depends(get_db), _admin: Salesman = Depends(require_admin)):
+    r = analytics.ai_quality_trend(
+        s, _filter(date_from, date_to, salesman_id, cust_nb, None, None))
+    return [QualityTrendPointOut(**vars(x)) for x in r]
 
 
 @router.get("/salesmen-request-metrics",

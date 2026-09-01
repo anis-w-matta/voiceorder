@@ -202,6 +202,31 @@ class AiQualitySummaryOut(BaseModel):
     by_confidence_bucket: list[ConfidenceBucketStatOut]
 
 
+# Phase 11: hotspots + trend. No correction TAXONOMY (item/qty/UOM/intent
+# breakdown of *what* changed) or "prediction -> edit -> final value" view -
+# both need a stored original-AI-prediction distinct from PendingLine's
+# final value, which does not exist anywhere in this schema. See the
+# module docstring in app/services/analytics.py for the full explanation -
+# the frontend must render this as an explicit UNAVAILABLE gap, not omit it.
+
+class ItemQualityStatOut(BaseModel):
+    item_nb: str
+    sample_size: int
+    correction_rate: float | None = None
+
+
+class IntentQualityStatOut(BaseModel):
+    intent: str
+    sample_size: int
+    correction_rate: float | None = None
+
+
+class QualityTrendPointOut(BaseModel):
+    bucket: str
+    sample_size: int
+    correction_rate: float | None = None
+
+
 class SalesmanRequestMetricsOut(BaseModel):
     salesman_id: str
     request_count: int

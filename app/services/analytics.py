@@ -18,7 +18,7 @@ available rows are the whole population.
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, func, select
 from sqlalchemy.orm import Session
 
 from app.models import PendingLine, PendingRequest
@@ -237,9 +237,26 @@ def requests_summary(session: Session, f: RequestsFilter) -> RequestsSummary:
 
 
 # ---- AI quality -------------------------------------------------------
+#
+# Phase 11 data-honesty note, load-bearing for everything below: PendingLine
+# stores only the FINAL (possibly human-edited) item_nb/qty/uom, plus a
+# single `operator_edited` boolean - there is no stored original AI
+# prediction distinct from the final value anywhere in this schema
+# (`raw_model_output` on PendingRequest is request-level parse metadata,
+# e.g. {"scripted": True, "command_type": "place_order"} - never a per-line
+# predicted-vs-final snapshot; confirmed by reading every PendingRequest
+# construction site in app/pipeline.py and app/services/draft_builder.py).
+# So "AI prediction -> human edit -> final value" and a correction
+# TAXONOMY (item mismatch vs. quantity vs. UOM vs. intent) are NOT
+# reconstructable from current data - only "was this line edited at all"
+# is known. Do not fabricate a taxonomy by guessing; the BFF/frontend must
+# expose this as an explicit, honest gap (completeness UNAVAILABLE with a
+# clear note), not silently omit it. What IS real and built below:
+# confidence buckets, overall/bucketed correction rate (binary edited/not),
+# hotspots by item and by intent, and a correction-rate trend over time.
 
-CONFIDENCE_BUCKETS = [(0.0, 0.5, "low"), (0.5, 0.8, "medium"),
-                      (0.8, 0.95, "high"), (0.95, 1.01, "very_high")]
+CONFIDENCE_BUCKETS = [(0.0, 0.6, "under_60"), (0.6, 0.8, "60_80"),
+                      (0.8, 0.9, "80_90"), (0.9, 1.01, "90_plus")]
 
 
 @dataclass
@@ -310,6 +327,98 @@ def ai_quality_summary(session: Session, f: RequestsFilter) -> AiQualitySummary:
         reviewed_lines=total, edited_lines=edited,
         overall_correction_rate=(edited / total) if total else None,
         low_confidence_count=low_conf, by_confidence_bucket=buckets)
+
+
+@dataclass
+class ItemQualityStat:
+    item_nb: str
+    sample_size: int
+    correction_rate: float | None
+
+
+def ai_quality_by_item(session: Session, f: RequestsFilter,
+                       min_sample_size: int = 3) -> list[ItemQualityStat]:
+    """Correction-rate hotspots by item - only items with at least
+    min_sample_size reviewed lines are included, so a single edited line
+    on a rarely-ordered item doesn't look like a 100% hotspot."""
+    sub = _lines_query(f).subquery()
+    rows = session.execute(
+        select(sub.c.item_nb, func.count(),
+              func.sum(func.cast(sub.c.operator_edited, Integer)))
+        .select_from(sub)
+        .where(sub.c.item_nb.is_not(None))
+        .group_by(sub.c.item_nb)
+        .having(func.count() >= min_sample_size)
+        .order_by(func.count().desc())
+    ).all()
+    return [ItemQualityStat(item_nb=r[0], sample_size=r[1],
+                            correction_rate=(r[2] or 0) / r[1])
+           for r in rows]
+
+
+@dataclass
+class IntentQualityStat:
+    intent: str
+    sample_size: int
+    correction_rate: float | None
+
+
+def ai_quality_by_intent(session: Session, f: RequestsFilter) -> list[IntentQualityStat]:
+    """Correction-rate hotspots by request intent (add_order, return_order,
+    etc.) - request-level intent joined onto each of its lines."""
+    q = (
+        select(PendingRequest.primary_intent, func.count(),
+              func.sum(func.cast(PendingLine.operator_edited, Integer)))
+        .select_from(PendingLine)
+        .join(PendingRequest, PendingRequest.id == PendingLine.request_id)
+        .group_by(PendingRequest.primary_intent)
+    )
+    if f.date_from is not None:
+        q = q.where(PendingRequest.created_at >= f.date_from)
+    if f.date_to is not None:
+        q = q.where(PendingRequest.created_at <= f.date_to)
+    if f.salesman_id is not None:
+        q = q.where(PendingRequest.assigned_to == f.salesman_id)
+    if f.cust_nb is not None:
+        q = q.where(PendingRequest.cust_nb == f.cust_nb)
+    rows = session.execute(q).all()
+    return [IntentQualityStat(intent=r[0], sample_size=r[1],
+                              correction_rate=(r[2] or 0) / r[1] if r[1] else None)
+           for r in rows]
+
+
+@dataclass
+class QualityTrendPoint:
+    bucket: str  # "YYYY-MM"
+    sample_size: int
+    correction_rate: float | None
+
+
+def ai_quality_trend(session: Session, f: RequestsFilter) -> list[QualityTrendPoint]:
+    """Monthly correction-rate trend, bucketed by the request's created_at
+    (when it entered the queue - a line's own "when was it AI-classified"
+    moment, not a business/order date)."""
+    month = func.to_char(func.date_trunc("month", PendingRequest.created_at), "YYYY-MM")
+    q = (
+        select(month, func.count(),
+              func.sum(func.cast(PendingLine.operator_edited, Integer)))
+        .select_from(PendingLine)
+        .join(PendingRequest, PendingRequest.id == PendingLine.request_id)
+        .group_by(month)
+        .order_by(month)
+    )
+    if f.date_from is not None:
+        q = q.where(PendingRequest.created_at >= f.date_from)
+    if f.date_to is not None:
+        q = q.where(PendingRequest.created_at <= f.date_to)
+    if f.salesman_id is not None:
+        q = q.where(PendingRequest.assigned_to == f.salesman_id)
+    if f.cust_nb is not None:
+        q = q.where(PendingRequest.cust_nb == f.cust_nb)
+    rows = session.execute(q).all()
+    return [QualityTrendPoint(bucket=r[0], sample_size=r[1],
+                              correction_rate=(r[2] or 0) / r[1] if r[1] else None)
+           for r in rows]
 
 
 # ---- activity log (Phase 10 Operations) ----------------------------------
