@@ -124,3 +124,73 @@ class TestSalesmenRequestMetrics:
         assert by_sm["sm_a"].rejection_rate == pytest.approx(0.5)
         assert by_sm["sm_b"].request_count == 1
         assert by_sm["sm_b"].rejection_rate == pytest.approx(0.0)
+
+
+class TestActivitySummary:
+    """Phase 10 - a NEW admin-gated aggregate endpoint (app/api/analytics.py
+    require_admin), deliberately separate from the existing raw GET
+    /activity, which has no per-user auth at all (see
+    vendo-intelligence-web/docs/audit/04_auth_map.md)."""
+
+    def _log(self, db_session, *, event_type, ts, cust_nb=None, level="info"):
+        from app.models import ActivityLog
+        db_session.add(ActivityLog(event_type=event_type, ts=ts, level=level,
+                                   cust_nb=cust_nb, message="test"))
+        db_session.flush()
+
+    def test_by_hour_groups_across_the_full_24_hour_range(self, db_session):
+        self._log(db_session, event_type="voice_received",
+                  ts=datetime(2026, 3, 1, 9, 15, tzinfo=timezone.utc))
+        self._log(db_session, event_type="voice_received",
+                  ts=datetime(2026, 3, 2, 9, 45, tzinfo=timezone.utc))
+        self._log(db_session, event_type="order_committed",
+                  ts=datetime(2026, 3, 1, 14, 0, tzinfo=timezone.utc))
+
+        r = analytics.activity_by_hour(db_session, analytics.ActivityFilter())
+        by_hour = {x.hour: x.count for x in r}
+        assert len(r) == 24  # every hour present, even with zero events
+        assert by_hour[9] >= 2
+        assert by_hour[14] >= 1
+
+    def test_by_event_type_groups_and_sorts_descending(self, db_session):
+        self._log(db_session, event_type="voice_received",
+                  ts=datetime(2026, 3, 1, tzinfo=timezone.utc))
+        self._log(db_session, event_type="voice_received",
+                  ts=datetime(2026, 3, 1, tzinfo=timezone.utc))
+        self._log(db_session, event_type="request_rejected",
+                  ts=datetime(2026, 3, 1, tzinfo=timezone.utc))
+
+        r = analytics.activity_by_event_type(
+            db_session, analytics.ActivityFilter(
+                date_from=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                date_to=datetime(2026, 3, 2, tzinfo=timezone.utc)))
+        by_type = {x.event_type: x.count for x in r}
+        assert by_type["voice_received"] == 2
+        assert by_type["request_rejected"] == 1
+
+    def test_filters_by_customer(self, db_session):
+        self._log(db_session, event_type="voice_received",
+                  ts=datetime(2026, 3, 1, tzinfo=timezone.utc), cust_nb="C1")
+        self._log(db_session, event_type="voice_received",
+                  ts=datetime(2026, 3, 1, tzinfo=timezone.utc), cust_nb="C2")
+
+        r = analytics.activity_summary(
+            db_session, analytics.ActivityFilter(cust_nb="C1"))
+        total = sum(x.count for x in r.by_event_type)
+        assert total == 1
+
+    def test_volume_over_time_buckets_by_day(self, db_session):
+        self._log(db_session, event_type="voice_received",
+                  ts=datetime(2026, 3, 1, 8, 0, tzinfo=timezone.utc))
+        self._log(db_session, event_type="voice_received",
+                  ts=datetime(2026, 3, 1, 20, 0, tzinfo=timezone.utc))
+        self._log(db_session, event_type="voice_received",
+                  ts=datetime(2026, 3, 2, 8, 0, tzinfo=timezone.utc))
+
+        r = analytics.activity_volume_over_time(
+            db_session, analytics.ActivityFilter(
+                date_from=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                date_to=datetime(2026, 3, 3, tzinfo=timezone.utc)))
+        by_day = {x.day.date(): x.count for x in r}
+        assert by_day[datetime(2026, 3, 1).date()] == 2
+        assert by_day[datetime(2026, 3, 2).date()] == 1

@@ -210,6 +210,31 @@ class SalesmanRequestMetricsOut(BaseModel):
     ai_correction_rate: float | None = None
 
 
+# ---- activity log analytics (Phase 10) - aggregates only, never raw rows,
+# and admin-gated (see app/api/analytics.py) unlike the existing raw
+# GET /activity, which has no per-user auth at all.
+
+class HourCountOut(BaseModel):
+    hour: int
+    count: int
+
+
+class EventTypeCountOut(BaseModel):
+    event_type: str
+    count: int
+
+
+class ActivityVolumePointOut(BaseModel):
+    day: datetime
+    count: int
+
+
+class ActivitySummaryOut(BaseModel):
+    by_hour: list[HourCountOut]
+    by_event_type: list[EventTypeCountOut]
+    volume_over_time: list[ActivityVolumePointOut]
+
+
 class ActivityLogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

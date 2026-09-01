@@ -304,6 +304,108 @@ def ai_quality_summary(session: Session, f: RequestsFilter) -> AiQualitySummary:
         low_confidence_count=low_conf, by_confidence_bucket=buckets)
 
 
+# ---- activity log (Phase 10 Operations) ----------------------------------
+# Deliberately a NEW admin-gated aggregate endpoint (see
+# app/api/analytics.py, require_admin), not the existing raw GET /activity
+# - that route has no per-user auth dependency at all (see
+# vendo-intelligence-web/docs/audit/04_auth_map.md and /08), so Phase 10
+# must not read from it. These queries return only counts/aggregates,
+# never raw log rows (message/details/cust_nb-per-row), so there is no
+# lineage back through this endpoint to the same exposure.
+
+@dataclass
+class ActivityFilter:
+    date_from: datetime | None = None
+    date_to: datetime | None = None
+    cust_nb: str | None = None
+
+
+def _activity_query(f: ActivityFilter):
+    from app.models import ActivityLog
+    q = select(ActivityLog)
+    if f.date_from is not None:
+        q = q.where(ActivityLog.ts >= f.date_from)
+    if f.date_to is not None:
+        q = q.where(ActivityLog.ts <= f.date_to)
+    if f.cust_nb is not None:
+        q = q.where(ActivityLog.cust_nb == f.cust_nb)
+    return q
+
+
+@dataclass
+class HourCount:
+    hour: int  # 0-23, UTC
+    count: int
+
+
+def activity_by_hour(session: Session, f: ActivityFilter) -> list[HourCount]:
+    """Hour-of-day in UTC, explicitly - EXTRACT(HOUR FROM a timestamptz)
+    otherwise silently converts to the DB session's timezone first (this
+    deployment's Postgres session defaults to Europe/Chisinau, not UTC),
+    which would make "hour 9" mean a different real hour depending on
+    server/session config. Not business-local time (BUSINESS_TIMEZONE is
+    Asia/Beirut) - a documented, deliberate choice: this is an operational
+    "when do events happen" view, not a business-hours calculation, and
+    UTC is unambiguous across deployments."""
+    from app.models import ActivityLog
+    hour = func.extract("hour", func.timezone("UTC", ActivityLog.ts))
+    q = _activity_query(f).with_only_columns(hour, func.count()).group_by(hour).order_by(hour)
+    rows = session.execute(q).all()
+    counts = {h: 0 for h in range(24)}
+    for h, c in rows:
+        counts[int(h)] = c
+    return [HourCount(hour=h, count=counts[h]) for h in range(24)]
+
+
+@dataclass
+class EventTypeCount:
+    event_type: str
+    count: int
+
+
+def activity_by_event_type(session: Session, f: ActivityFilter) -> list[EventTypeCount]:
+    from app.models import ActivityLog
+    q = (_activity_query(f)
+        .with_only_columns(ActivityLog.event_type, func.count())
+        .group_by(ActivityLog.event_type).order_by(func.count().desc()))
+    rows = session.execute(q).all()
+    return [EventTypeCount(event_type=r[0], count=r[1]) for r in rows]
+
+
+@dataclass
+class ActivityVolumePoint:
+    day: datetime
+    count: int
+
+
+def activity_volume_over_time(session: Session, f: ActivityFilter) -> list[ActivityVolumePoint]:
+    """Day boundaries in UTC, explicitly - same reasoning as
+    activity_by_hour's timezone note above; date_trunc('day', a
+    timestamptz) would otherwise shift day boundaries by this deployment's
+    Postgres session offset (Europe/Chisinau) instead of UTC midnight."""
+    from app.models import ActivityLog
+    day = func.date_trunc("day", func.timezone("UTC", ActivityLog.ts))
+    q = (_activity_query(f)
+        .with_only_columns(day, func.count())
+        .group_by(day).order_by(day))
+    rows = session.execute(q).all()
+    return [ActivityVolumePoint(day=r[0], count=r[1]) for r in rows]
+
+
+@dataclass
+class ActivitySummary:
+    by_hour: list[HourCount]
+    by_event_type: list[EventTypeCount]
+    volume_over_time: list[ActivityVolumePoint]
+
+
+def activity_summary(session: Session, f: ActivityFilter) -> ActivitySummary:
+    return ActivitySummary(
+        by_hour=activity_by_hour(session, f),
+        by_event_type=activity_by_event_type(session, f),
+        volume_over_time=activity_volume_over_time(session, f))
+
+
 # ---- per-salesman -------------------------------------------------------
 
 @dataclass

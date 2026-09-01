@@ -4,11 +4,13 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import get_db, require_admin
 from app.models import Salesman
-from app.schemas.api_out import (AiQualitySummaryOut, BacklogSummaryOut,
-                                 ConfidenceBucketStatOut, RejectionSummaryOut,
-                                 RequestsSummaryOut, SalesmanRequestMetricsOut,
-                                 StatusCountOut, TurnaroundSummaryOut,
-                                 VolumePointOut)
+from app.schemas.api_out import (ActivitySummaryOut, AiQualitySummaryOut,
+                                 BacklogSummaryOut, ConfidenceBucketStatOut,
+                                 EventTypeCountOut, HourCountOut,
+                                 RejectionSummaryOut, RequestsSummaryOut,
+                                 SalesmanRequestMetricsOut, StatusCountOut,
+                                 TurnaroundSummaryOut, VolumePointOut,
+                                 ActivityVolumePointOut)
 from app.services import analytics
 
 router = APIRouter(prefix="/admin/analytics", tags=["analytics"])
@@ -66,3 +68,16 @@ def salesmen_request_metrics(date_from: datetime | None = None,
     r = analytics.salesmen_request_metrics(
         s, _filter(date_from, date_to, None, cust_nb, status, intent))
     return [SalesmanRequestMetricsOut(**vars(x)) for x in r]
+
+
+@router.get("/activity-summary", response_model=ActivitySummaryOut)
+def activity_summary(date_from: datetime | None = None,
+                     date_to: datetime | None = None,
+                     cust_nb: str | None = None, s=Depends(get_db),
+                     _admin: Salesman = Depends(require_admin)):
+    r = analytics.activity_summary(
+        s, analytics.ActivityFilter(date_from=date_from, date_to=date_to, cust_nb=cust_nb))
+    return ActivitySummaryOut(
+        by_hour=[HourCountOut(**vars(x)) for x in r.by_hour],
+        by_event_type=[EventTypeCountOut(**vars(x)) for x in r.by_event_type],
+        volume_over_time=[ActivityVolumePointOut(**vars(x)) for x in r.volume_over_time])
