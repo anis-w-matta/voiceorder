@@ -91,25 +91,33 @@ class StatusCount:
 class BacklogSummary:
     total: int
     oldest_created_at: datetime | None
-    age_buckets: dict[str, int]  # "0-1d" / "1-3d" / "3-7d" / "7d+"
+    age_buckets: dict[str, int]  # "<5m" / "5-10m" / "10-30m" / "30-60m" / "60m+"
 
 
 def _age_bucket(age: timedelta) -> str:
-    days = age.total_seconds() / 86400
-    if days < 1:
-        return "0-1d"
-    if days < 3:
-        return "1-3d"
-    if days < 7:
-        return "3-7d"
-    return "7d+"
+    """Phase 10 (Operations Command Center): a request backlog is
+    operationally urgent on the scale of minutes, not days - so these
+    buckets are minute-granularity, not the day-granularity buckets an
+    earlier phase used. Changing this is a deliberate Phase 10 fix, not a
+    reinterpretation of backlog semantics (still: age = now - created_at,
+    still scoped to OPEN_STATUSES in backlog_summary below)."""
+    minutes = age.total_seconds() / 60
+    if minutes < 5:
+        return "<5m"
+    if minutes < 10:
+        return "5-10m"
+    if minutes < 30:
+        return "10-30m"
+    if minutes < 60:
+        return "30-60m"
+    return "60m+"
 
 
 def backlog_summary(session: Session, f: RequestsFilter) -> BacklogSummary:
     q = _base_query(f).where(PendingRequest.status.in_(OPEN_STATUSES))
     rows = session.scalars(q).all()
     now = datetime.now(timezone.utc)
-    buckets = {"0-1d": 0, "1-3d": 0, "3-7d": 0, "7d+": 0}
+    buckets = {"<5m": 0, "5-10m": 0, "10-30m": 0, "30-60m": 0, "60m+": 0}
     oldest = None
     for r in rows:
         buckets[_age_bucket(now - r.created_at)] += 1

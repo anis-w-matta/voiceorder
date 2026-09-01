@@ -46,16 +46,31 @@ class TestBacklog:
             self, db_session, voice_message):
         now = datetime.now(timezone.utc)
         _request(db_session, voice_message, status=RequestStatus.new.value,
-                 created_at=now - timedelta(hours=2))
+                 created_at=now - timedelta(minutes=2))
         _request(db_session, voice_message, status=RequestStatus.in_review.value,
-                 created_at=now - timedelta(days=5))
+                 created_at=now - timedelta(minutes=90))
         _request(db_session, voice_message, status=RequestStatus.rejected.value,
-                 created_at=now - timedelta(hours=1), decided_at=now)
+                 created_at=now - timedelta(minutes=1), decided_at=now)
 
         r = analytics.backlog_summary(db_session, analytics.RequestsFilter())
         assert r.total == 2
-        assert r.age_buckets["0-1d"] == 1
-        assert r.age_buckets["3-7d"] == 1
+        assert r.age_buckets["<5m"] == 1
+        assert r.age_buckets["60m+"] == 1
+
+    def test_buckets_span_the_full_minute_range(self, db_session, voice_message):
+        now = datetime.now(timezone.utc)
+        _request(db_session, voice_message, status=RequestStatus.new.value,
+                 created_at=now - timedelta(minutes=7))
+        _request(db_session, voice_message, status=RequestStatus.new.value,
+                 created_at=now - timedelta(minutes=20))
+        _request(db_session, voice_message, status=RequestStatus.new.value,
+                 created_at=now - timedelta(minutes=45))
+
+        r = analytics.backlog_summary(db_session, analytics.RequestsFilter())
+        assert r.total == 3
+        assert r.age_buckets["5-10m"] == 1
+        assert r.age_buckets["10-30m"] == 1
+        assert r.age_buckets["30-60m"] == 1
 
 
 class TestTurnaround:
