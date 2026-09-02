@@ -1,9 +1,8 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey,
-                        Numeric, String, Text, func)
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import (JSON, BigInteger, Boolean, DateTime, Float,
+                        ForeignKey, Numeric, String, Text, text)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -17,18 +16,18 @@ class PendingRequest(Base):
     voice_message_id: Mapped[int] = mapped_column(
         ForeignKey("voice_message.id"))
     cust_nb: Mapped[str | None] = mapped_column(String(20), index=True)
-    intents: Mapped[list] = mapped_column(JSONB, default=list)
+    intents: Mapped[list] = mapped_column(JSON, default=list)
     primary_intent: Mapped[str] = mapped_column(String(40))
     target_order_nb: Mapped[str | None] = mapped_column(String(30))
     target_order_type: Mapped[str | None] = mapped_column(String(10))
-    raw_model_output: Mapped[dict] = mapped_column(JSONB, default=dict)
-    flags: Mapped[list] = mapped_column(JSONB, default=list)
+    raw_model_output: Mapped[dict] = mapped_column(JSON, default=dict)
+    flags: Mapped[list] = mapped_column(JSON, default=list)
     classification_quality: Mapped[str] = mapped_column(String(20), default="good")
     status: Mapped[str] = mapped_column(String(20), default="new", index=True)
     assigned_to: Mapped[str | None] = mapped_column(String(100))
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now())
+        DateTime(timezone=True), server_default=text("SYSUTCDATETIME()"))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decided_by: Mapped[str | None] = mapped_column(String(100))
     decision_note: Mapped[str | None] = mapped_column(Text)
@@ -70,11 +69,11 @@ class PendingLine(Base):
     # this on the way to the dashboard looks identical to an ordinary add.
     change: Mapped[str | None] = mapped_column(String(10))
     operator_edited: Mapped[bool] = mapped_column(Boolean, default=False)
-    candidates: Mapped[list] = mapped_column(JSONB, default=list)
+    candidates: Mapped[list] = mapped_column(JSON, default=list)
     category: Mapped[str | None] = mapped_column(String(100))
-    line_flags: Mapped[list] = mapped_column(JSONB, default=list)
-    resolution_meta: Mapped[dict] = mapped_column(JSONB, default=dict)
-    attributes: Mapped[dict] = mapped_column(JSONB, default=dict)
-    qualifiers: Mapped[dict] = mapped_column(JSONB, default=dict)
+    line_flags: Mapped[list] = mapped_column(JSON, default=list)
+    resolution_meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict] = mapped_column(JSON, default=dict)
+    qualifiers: Mapped[dict] = mapped_column(JSON, default=dict)
 
     request: Mapped["PendingRequest"] = relationship(back_populates="lines")

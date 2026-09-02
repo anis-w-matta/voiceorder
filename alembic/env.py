@@ -19,11 +19,11 @@ version_table_schema = os.environ.get("ALEMBIC_SCHEMA")
 # access to the values within the .ini file in use.
 config = context.config
 # set_main_option() stores the value in a ConfigParser section, which
-# applies BasicInterpolation to '%' on every subsequent read - a percent-
-# encoded DATABASE_URL (e.g. the test schema's "...?options=-c%20search_
-# path...") then raises "invalid interpolation syntax" instead of
-# configuring anything. Escaping '%' -> '%%' survives the round trip; the
-# stored value comes back out exactly as it went in.
+# applies BasicInterpolation to '%' on every subsequent read - any literal
+# '%' in DATABASE_URL (e.g. a percent-encoded ODBC driver name/password)
+# then raises "invalid interpolation syntax" instead of configuring
+# anything. Escaping '%' -> '%%' survives the round trip; the stored value
+# comes back out exactly as it went in.
 config.set_main_option("sqlalchemy.url",
                        settings.database_url.replace("%", "%%"))
 
@@ -36,6 +36,18 @@ target_metadata = Base.metadata
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
+
+
+# SQL Server has no Postgres-style search_path - unqualified table DDL/DML
+# lands in whatever schema the migrations here don't otherwise specify
+# (normally the connecting login's default schema, e.g. dbo). When
+# ALEMBIC_SCHEMA is set (isolated test runs - see tests/conftest.py),
+# schema_translate_map redirects every unqualified table reference to that
+# schema too, not just the alembic_version bookkeeping table - the portable
+# SQLAlchemy equivalent of what the old Postgres search_path connection
+# option did implicitly.
+_schema_translate_map = ({None: version_table_schema}
+                         if version_table_schema else None)
 
 
 def run_migrations_offline() -> None:
@@ -57,6 +69,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         version_table_schema=version_table_schema,
+        schema_translate_map=_schema_translate_map,
     )
 
     with context.begin_transaction():
@@ -77,6 +90,9 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        if _schema_translate_map:
+            connection = connection.execution_options(
+                schema_translate_map=_schema_translate_map)
         context.configure(
             connection=connection, target_metadata=target_metadata,
             version_table_schema=version_table_schema,

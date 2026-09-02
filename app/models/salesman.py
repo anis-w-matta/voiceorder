@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy import Boolean, DateTime, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -24,7 +24,7 @@ class Salesman(Base):
     role: Mapped[str] = mapped_column(String(20), default="salesman",
                                       server_default="salesman")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now())
+        DateTime(timezone=True), server_default=text("SYSUTCDATETIME()"))
 
     @property
     def is_admin(self) -> bool:

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_audio, get_current_salesman, get_db
@@ -40,10 +40,14 @@ def list_queue(status: str | None = None, flag: str | None = Query(None),
         # the history view sourced from catalog-service's own order data.
         q = q.where(PendingRequest.status.notin_(DECIDED))
     if flag:
-        # Filter in SQL (jsonb @> '["flag"]'). Doing this in Python after the
-        # LIMIT meant the filter only ever saw the first `limit` rows, so a
-        # matching request just outside that window vanished from the queue.
-        q = q.where(PendingRequest.flags.contains([flag]))
+        # Filter in SQL, not in Python after the LIMIT - a matching request
+        # just outside that window would otherwise silently vanish from the
+        # queue. flags is a JSON array column (no native array-containment
+        # operator on SQL Server, unlike Postgres' jsonb @>), so membership
+        # is checked via OPENJSON instead.
+        q = q.where(text(
+            "EXISTS (SELECT 1 FROM OPENJSON(pending_request.flags) "
+            "WHERE value = :flag)").bindparams(flag=flag))
     if not salesman.is_admin:
         # A plain salesman only ever sees requests for their own customers
         # (or ones not yet resolved to any customer - nothing to protect

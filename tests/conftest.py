@@ -1,16 +1,17 @@
 """Shared fixtures for the backend's regression suite.
 
-DB-backed tests run against the `voiceorder_test` Postgres schema (same
-server as the real `voiceorder` DB, `public` schema - selected via a
-`search_path` connection option, never touched by these tests). That
-schema already exists and is at the current Alembic head (`aa0916e613fb`)
-as of writing this suite; if it's ever behind, bring it up to date with:
+DB-backed tests run against the `voiceorder_test` schema (same SQL Server
+database as the real `voiceorder` DB - a real SQL Server schema, isolated
+via SQLAlchemy's schema_translate_map, not a separate database). That
+schema needs to exist and be at the current Alembic head before running
+this suite:
 
-    ALEMBIC_SCHEMA=voiceorder_test .venv/Scripts/python -m alembic \
-        -x sqlalchemy.url="<DATABASE_URL>?options=-c%20search_path=voiceorder_test" \
-        upgrade head
+    CREATE SCHEMA voiceorder_test;   -- once, via SSMS/sqlcmd
+    ALEMBIC_SCHEMA=voiceorder_test .venv/Scripts/python -m alembic upgrade head
 
-(see alembic/env.py's ALEMBIC_SCHEMA handling). Each test runs inside a
+(see alembic/env.py's ALEMBIC_SCHEMA handling - it now redirects both the
+alembic_version bookkeeping table AND every migration's unqualified table
+DDL into that schema, not just bookkeeping). Each test runs inside a
 transaction that's rolled back afterward (nested SAVEPOINT so code under
 test can call session.commit() without actually persisting), so tests
 never depend on each other's data and never require a manual cleanup step.
@@ -34,15 +35,10 @@ from app.models import Salesman
 _TEST_SCHEMA = "voiceorder_test"
 
 
-def _test_db_url() -> str:
-    base = settings.database_url
-    sep = "&" if "?" in base else "?"
-    return f"{base}{sep}options=-c%20search_path%3D{_TEST_SCHEMA}"
-
-
 @pytest.fixture(scope="session")
 def engine():
-    eng = create_engine(_test_db_url(), future=True)
+    eng = create_engine(settings.database_url, future=True).execution_options(
+        schema_translate_map={None: _TEST_SCHEMA})
     yield eng
     eng.dispose()
 

@@ -13,7 +13,7 @@ from app.services.catalog_client import CommitTransientError
 
 # JSON-safe (de)serialization for catalog_client.LineIn/LineEditIn, so the
 # commit saga's replay payload (PendingRequest.raw_model_output.
-# commit_request, see commit() below) can round-trip through JSONB -
+# commit_request, see commit() below) can round-trip through JSON -
 # shared with app/worker.py's reconcile_stuck_commits, which rebuilds the
 # same dataclasses from this same shape to resend an interrupted commit.
 
