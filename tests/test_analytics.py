@@ -73,6 +73,35 @@ class TestBacklog:
         assert r.age_buckets["30-60m"] == 1
 
 
+class TestVolumeOverTime:
+    """Day boundaries in UTC, explicitly (see the docstring on
+    analytics.volume_over_time) - date_trunc('day', a timestamptz) without
+    an explicit UTC() wrap would shift day boundaries by this deployment's
+    Postgres session offset (Europe/Chisinau, currently UTC+3) instead of
+    real UTC midnight."""
+
+    def test_buckets_by_utc_day_not_session_timezone(
+            self, db_session, voice_message):
+        # 30 minutes apart in UTC (straddling the UTC day boundary), but
+        # >1.5 hours apart in Chisinau local time - a regression to the
+        # old, unwrapped date_trunc would collapse both into the same
+        # (wrong) local day.
+        _request(db_session, voice_message, status=RequestStatus.new.value,
+                 created_at=datetime(2026, 3, 1, 23, 45, tzinfo=timezone.utc))
+        _request(db_session, voice_message, status=RequestStatus.new.value,
+                 created_at=datetime(2026, 3, 2, 0, 15, tzinfo=timezone.utc))
+
+        r = analytics.volume_over_time(
+            db_session, analytics.RequestsFilter(
+                date_from=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                date_to=datetime(2026, 3, 3, tzinfo=timezone.utc)))
+        by_day: dict = {}
+        for point in r:
+            by_day[point.day.date()] = by_day.get(point.day.date(), 0) + point.count
+        assert by_day.get(datetime(2026, 3, 1).date()) == 1
+        assert by_day.get(datetime(2026, 3, 2).date()) == 1
+
+
 class TestTurnaround:
     def test_computes_percentiles_over_decided_requests_only(
             self, db_session, voice_message):
@@ -160,6 +189,28 @@ class TestAiQuality:
         r = analytics.ai_quality_trend(db_session, analytics.RequestsFilter())
         by_bucket = {x.bucket: x for x in r}
         assert by_bucket["2026-01"].correction_rate == 1.0
+        assert by_bucket["2026-02"].correction_rate == 0.0
+
+    def test_trend_buckets_by_utc_month_not_session_timezone(
+            self, db_session, voice_message):
+        """Month boundaries in UTC, explicitly (see the docstring on
+        analytics.ai_quality_trend) - this deployment's Postgres session
+        defaults to Europe/Chisinau (currently UTC+3), so a timestamp late
+        on the last UTC day of January is already February in local time.
+        A regression to the old, unwrapped date_trunc('month', ...) would
+        put this row in the "2026-02" bucket instead of "2026-01"."""
+        req1 = _request(db_session, voice_message, status=RequestStatus.new.value,
+                        created_at=datetime(2026, 1, 31, 23, 0, tzinfo=timezone.utc),
+                        lines=[(1, 0.9, True)])
+        req2 = _request(db_session, voice_message, status=RequestStatus.new.value,
+                        created_at=datetime(2026, 2, 15, tzinfo=timezone.utc),
+                        lines=[(1, 0.9, False)])
+
+        r = analytics.ai_quality_trend(db_session, analytics.RequestsFilter())
+        by_bucket = {x.bucket: x for x in r}
+        assert by_bucket["2026-01"].sample_size == 1
+        assert by_bucket["2026-01"].correction_rate == 1.0
+        assert by_bucket["2026-02"].sample_size == 1
         assert by_bucket["2026-02"].correction_rate == 0.0
 
 

@@ -209,7 +209,12 @@ class VolumePoint:
 
 
 def volume_over_time(session: Session, f: RequestsFilter) -> list[VolumePoint]:
-    day = func.date_trunc("day", PendingRequest.created_at)
+    """Day boundaries in UTC, explicitly - same reasoning as
+    activity_by_hour/activity_volume_over_time's timezone notes below;
+    date_trunc('day', a timestamptz) would otherwise shift day boundaries
+    by this deployment's Postgres session offset (Europe/Chisinau) instead
+    of UTC midnight."""
+    day = func.date_trunc("day", func.timezone("UTC", PendingRequest.created_at))
     q = _apply_filters(
         select(day, PendingRequest.status, func.count())
         .group_by(day, PendingRequest.status)
@@ -397,8 +402,15 @@ class QualityTrendPoint:
 def ai_quality_trend(session: Session, f: RequestsFilter) -> list[QualityTrendPoint]:
     """Monthly correction-rate trend, bucketed by the request's created_at
     (when it entered the queue - a line's own "when was it AI-classified"
-    moment, not a business/order date)."""
-    month = func.to_char(func.date_trunc("month", PendingRequest.created_at), "YYYY-MM")
+    moment, not a business/order date). Month boundaries computed in UTC,
+    explicitly - same reasoning as volume_over_time's timezone note above;
+    date_trunc('month', a timestamptz) would otherwise shift month
+    boundaries (only visible near a month's start/end) by this
+    deployment's Postgres session offset (Europe/Chisinau) instead of
+    UTC."""
+    month = func.to_char(
+        func.date_trunc("month", func.timezone("UTC", PendingRequest.created_at)),
+        "YYYY-MM")
     q = (
         select(month, func.count(),
               func.sum(func.cast(PendingLine.operator_edited, Integer)))
