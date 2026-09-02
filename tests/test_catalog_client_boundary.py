@@ -61,16 +61,30 @@ class TestPreviewQra:
                 1, "1001", "Widget", "cat", Decimal("2"), "EA")
 
         previews, bonuses = catalog_client.preview_qra("58466", [Line()])
-        # SUSPICIOUS: QraLinePreview.unit_price is typed Decimal | None, but
-        # preview_qra() assigns the raw JSON value (a str) straight through
-        # with no Decimal(...) conversion, unlike every other money/qty
-        # field in this module (see create_order()'s _dec() helper, or
-        # bonus.qty below, which IS converted). Documenting actual current
-        # behavior here, not fixing it - a caller doing unit_price + x or
-        # comparing to a Decimal would break today.
-        assert previews[0].unit_price == "8.00"
-        assert isinstance(previews[0].unit_price, str)
+        # unit_price is typed Decimal | None; preview_qra() must convert the
+        # raw JSON string the same way bonus.qty already does below,
+        # otherwise a caller doing unit_price + x or comparing to a Decimal
+        # would break.
+        assert previews[0].unit_price == Decimal("8.00")
+        assert isinstance(previews[0].unit_price, Decimal)
         assert bonuses[0].qty == Decimal("1.000")
+
+    def test_unit_price_none_stays_none(self, monkeypatch):
+        def handler(request):
+            return httpx.Response(200, json={
+                "lines": [{"line_nb": 1, "unit_price": None, "is_free": True,
+                          "substituted_item_nb": None, "substituted_item_desc": None}],
+                "bonus_lines": [],
+            })
+
+        _mock_client(handler, monkeypatch)
+
+        class Line:
+            line_nb, item_nb, item_desc, category, qty, uom = (
+                1, "1001", "Widget", "cat", Decimal("2"), "EA")
+
+        previews, _ = catalog_client.preview_qra("58466", [Line()])
+        assert previews[0].unit_price is None
 
     def test_empty_lines_returns_empty_without_a_request(self, monkeypatch):
         def handler(request):

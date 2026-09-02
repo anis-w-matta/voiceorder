@@ -224,7 +224,9 @@ def preview_qra(cust_nb: str | None, lines,
     }
     result = _post("/qra/preview", json=body)
     return (
-        [QraLinePreview(line_nb=p["line_nb"], unit_price=p["unit_price"],
+        [QraLinePreview(line_nb=p["line_nb"],
+                        unit_price=(Decimal(p["unit_price"])
+                                   if p["unit_price"] is not None else None),
                         is_free=p["is_free"],
                         substituted_item_nb=p["substituted_item_nb"],
                         substituted_item_desc=p["substituted_item_desc"])

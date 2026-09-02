@@ -29,6 +29,7 @@ class CandidateOut(BaseModel):
     # a loose substring guess is indistinguishable from an exact code match.
     method: str | None = None
     attribute_conflict: bool = False
+    conflict_reason: str | None = None
 
 
 class CustomerCandidateOut(BaseModel):

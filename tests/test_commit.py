@@ -176,6 +176,40 @@ class TestCommitFailureHandling:
         assert req.commit_intent_id is None
         assert req.decided_at is None
 
+    def test_definitive_failure_also_reverts_line_edits(
+            self, db_session, pending_request, monkeypatch):
+        """An unauthorized/otherwise-rejected accept must not leave
+        attacker- or otherwise-uncommitted line edits behind - only the
+        actual commit is supposed to make edits stick. Covers edit, add,
+        and remove together since _apply_edits can do all three."""
+        from app.errors import CustomerNotAuthorized
+
+        def raise_definitive(**kwargs):
+            raise CustomerNotAuthorized("58466")
+
+        monkeypatch.setattr(catalog_client, "create_order", raise_definitive)
+
+        edit = catalog_client.LineEditIn(line_nb=1, item_nb="9999",
+                                         item_desc="Swapped", qty=Decimal("99"))
+        add = catalog_client.LineEditIn(line_nb=2, item_nb="2002",
+                                        item_desc="Added", qty=Decimal("3"),
+                                        uom="EA")
+        svc = OrderCommitService(db_session)
+        with pytest.raises(CustomerNotAuthorized):
+            svc.commit(pending_request.id, "SO", line_edits=[edit, add],
+                      operator="attacker")
+
+        db_session.expire_all()
+        req = db_session.get(PendingRequest, pending_request.id)
+        assert len(req.lines) == 1, (
+            "a line added by a rejected commit attempt must not survive")
+        [line] = req.lines
+        assert line.item_nb == "1001"
+        assert line.qty == Decimal("2")
+        assert line.operator_edited is False, (
+            "a rejected edit attempt must not leave operator_edited=True "
+            "behind on the original line")
+
 
 class TestReconciliation:
     """reconcile_stuck_commit() - app/worker.py's crash-recovery sweep for

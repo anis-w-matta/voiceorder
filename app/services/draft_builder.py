@@ -118,7 +118,8 @@ class DraftBuilder:
                             "category": c.item_family or "",
                             "score": c.score,
                             "method": match.method,
-                            "attribute_conflict": not c.numeric_compatible}
+                            "attribute_conflict": not c.numeric_compatible,
+                            "conflict_reason": c.numeric_conflict_reason}
                            for c in match.candidates[:5]],
                 line_flags=line_flags,
                 resolution_meta={"explanation": match.explanation,

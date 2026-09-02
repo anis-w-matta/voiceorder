@@ -43,6 +43,44 @@ def line_edit_from_dict(d: dict) -> "catalog_client.LineEditIn":
         qty=Decimal(d["qty"]) if d["qty"] is not None else None, uom=d["uom"])
 
 
+# Every PendingLine column _apply_edits() (or the failed-commit revert below)
+# can touch - kept exhaustive rather than just the fields _apply_edits
+# happens to write today, so a snapshot/restore round-trip stays correct if
+# _apply_edits grows to touch more fields later.
+_LINE_FIELDS = ("raw_text", "raw_lang", "item_nb", "item_desc", "qty", "uom",
+               "match_confidence", "match_method", "change", "operator_edited",
+               "candidates", "category", "line_flags", "resolution_meta",
+               "attributes", "qualifiers")
+
+
+def _snapshot_lines(req) -> dict:
+    """req.lines, by line_nb, before _apply_edits() mutates them - lets a
+    definitive commit failure below put the request's lines back exactly
+    as they were, not the rejected edit."""
+    return {l.line_nb: {f: getattr(l, f) for f in _LINE_FIELDS}
+           for l in req.lines}
+
+
+def _restore_lines(req, snapshot: dict) -> None:
+    """Undoes _apply_edits()'s mutation of req.lines. Without this, a
+    definitive catalog-service failure (e.g. CustomerNotAuthorized, raised
+    for a salesman with no ownership over this request's customer) reverted
+    only status/commit_intent_id/decided_at, leaving the attacker-chosen
+    line_edits durably committed even though the commit itself never
+    happened."""
+    by_nb = {l.line_nb: l for l in req.lines}
+    for nb in list(by_nb):
+        if nb not in snapshot:
+            req.lines.remove(by_nb[nb])
+    for nb, fields in snapshot.items():
+        line = by_nb.get(nb)
+        if line is None:
+            req.lines.append(PendingLine(line_nb=nb, **fields))
+        else:
+            for f, v in fields.items():
+                setattr(line, f, v)
+
+
 class OrderCommitService:
     def __init__(self, session, numbering=None):
         self.s = session
@@ -97,6 +135,7 @@ class OrderCommitService:
             line_nb=e.line_nb, item_nb=e.item_nb, item_desc=e.item_desc,
             qty=e.qty, uom=e.uom) for e in line_edits]
         removed_snapshot = list(removed_line_nbs or [])
+        original_lines = _snapshot_lines(req)
 
         self._apply_edits(req, line_edits, removed_line_nbs or [])
 
@@ -157,10 +196,13 @@ class OrderCommitService:
             # A definitive validation failure (CustomerNotFound etc.) -
             # not transient, retrying with the same input won't help.
             # Revert to whatever this request's status was before this
-            # attempt, so it's reviewable again rather than stuck.
+            # attempt, so it's reviewable again rather than stuck - and
+            # undo _apply_edits() too, since the commit it was staged for
+            # never happened (see _restore_lines' docstring).
             req.status = original_status
             req.commit_intent_id = None
             req.decided_at = None
+            _restore_lines(req, original_lines)
             self.s.commit()
             raise
 
