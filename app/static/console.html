@@ -5,115 +5,143 @@
 <title>Voice Order Review</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
+  /* Palette + type lifted from the VeNdO Android design system
+     (core/designsystem: Color.kt / Type.kt / Theme.kt) so this console
+     reads as the same product, not a separate web tool. */
   :root{
-    --bg:#f5f6f8; --panel:#ffffff; --border:#e2e5ea; --text:#1a1d23; --muted:#6b7280;
-    --accent:#2563eb; --accent-weak:#eaf0fe; --green:#15803d; --green-weak:#e8f7ee;
-    --red:#b91c1c; --red-weak:#fdecec; --amber:#92400e; --amber-weak:#fef3e0;
-    --row-hover:#f0f4ff; --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+    --primary:#4F78D9; --secondary:#2F5F88; --on-primary:#ffffff;
+    --bg:#ffffff; --surface:#ffffff; --surface-variant:#E9ECEF;
+    --outline:#CFCFCF; --text:#000000; --muted:#5A5A5A;
+    --error:#B3261E;
+    --info-weak:rgba(47,95,136,.16); --positive-weak:rgba(79,120,217,.16);
+    --warning-weak:rgba(179,38,30,.14); --danger-weak:rgba(179,38,30,.20);
+    --row-hover:rgba(79,120,217,.08);
+    --display-font:"Arial Black","Segoe UI Black","Segoe UI",system-ui,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+  }
+  html[data-theme="dark"]{
+    --bg:#202124; --surface:#252525; --surface-variant:#333333;
+    --outline:#5A5A5A; --text:#ffffff; --muted:#CFCFCF;
+    --row-hover:rgba(79,120,217,.18);
   }
   *{box-sizing:border-box}
   body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
        background:var(--bg);color:var(--text);height:100vh;overflow:hidden}
-  header{display:flex;align-items:center;gap:16px;padding:10px 16px;
-         background:var(--panel);border-bottom:1px solid var(--border)}
-  header h1{font-size:15px;font-weight:600;margin:0;flex:0 0 auto}
+  header{display:flex;align-items:center;gap:16px;padding:0 16px;height:56px;
+         background:var(--surface);border-bottom:1px solid var(--outline)}
+  header h1{font-size:16px;font-weight:800;margin:0;flex:0 0 auto;letter-spacing:.02em;
+             font-family:var(--display-font);display:flex;align-items:center;gap:8px}
+  .brand{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;
+         border-radius:50%;background:var(--primary);color:#fff;font-size:12px;font-weight:900;
+         font-family:var(--display-font)}
   header .spacer{flex:1}
-  header label{font-size:12px;color:var(--muted);margin-right:6px}
-  header input[type=text]{border:1px solid var(--border);border-radius:6px;padding:6px 8px;
-         font-size:13px;width:140px}
-  .conn-dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;flex:0 0 auto}
-  .conn-dot.ok{background:var(--green)}
-  .conn-dot.bad{background:var(--red)}
+  header label{font-size:12px;color:var(--muted);margin-right:6px;font-weight:600}
+  header input[type=text]{border:1px solid var(--outline);border-radius:999px;padding:6px 12px;
+         font-size:13px;width:140px;background:var(--surface);color:var(--text)}
+  .conn-dot{width:8px;height:8px;border-radius:50%;background:var(--outline);flex:0 0 auto}
+  .conn-dot.ok{background:var(--primary)}
+  .conn-dot.bad{background:var(--error)}
 
-  .layout{display:grid;grid-template-columns:380px 1fr;height:calc(100vh - 49px)}
-  .queue-pane{border-right:1px solid var(--border);display:flex;flex-direction:column;
-              background:var(--panel);overflow:hidden}
-  .queue-filters{display:flex;gap:6px;padding:10px;border-bottom:1px solid var(--border);flex-wrap:wrap}
-  .queue-filters select{font-size:12px;padding:5px 6px;border:1px solid var(--border);
-              border-radius:6px;background:var(--panel)}
-  .queue-list{overflow-y:auto;flex:1}
-  .qrow{padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer}
+  .theme-toggle{width:44px;height:24px;border-radius:999px;background:var(--outline);
+         opacity:.6;cursor:pointer;position:relative;flex:0 0 auto;border:none;padding:2px}
+  .theme-toggle .thumb{width:20px;height:20px;border-radius:50%;background:var(--primary);
+         color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;
+         transition:transform .15s ease;transform:translateX(0)}
+  html[data-theme="dark"] .theme-toggle .thumb{transform:translateX(20px)}
+
+  .layout{display:grid;grid-template-columns:380px 1fr;height:calc(100vh - 56px)}
+  .queue-pane{border-right:1px solid var(--outline);display:flex;flex-direction:column;
+              background:var(--surface);overflow:hidden}
+  .queue-filters{display:flex;gap:6px;padding:10px;border-bottom:1px solid var(--outline);flex-wrap:wrap}
+  .queue-filters select{font-size:12px;padding:5px 8px;border:1px solid var(--outline);
+              border-radius:999px;background:var(--surface);color:var(--text)}
+  .queue-list{overflow-y:auto;flex:1;padding:8px;display:flex;flex-direction:column;gap:8px}
+  .qrow{padding:10px 14px;border-radius:12px;background:var(--surface-variant);cursor:pointer}
   .qrow:hover{background:var(--row-hover)}
-  .qrow.active{background:var(--accent-weak)}
+  .qrow.active{background:var(--positive-weak);box-shadow:inset 0 0 0 1.5px var(--primary)}
   .qrow-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
-  .qrow-name{font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .qrow-name{font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .qrow-time{font-size:11px;color:var(--muted);flex:0 0 auto}
   .qrow-mid{font-size:12px;color:var(--muted);margin-top:2px}
   .qrow-flags{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
   .empty{padding:30px 16px;color:var(--muted);font-size:13px;text-align:center}
 
-  .badge{display:inline-block;font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:99px;
-         line-height:1.5;white-space:nowrap}
-  .badge.status-new{background:var(--accent-weak);color:var(--accent)}
-  .badge.status-in_review{background:var(--amber-weak);color:var(--amber)}
-  .badge.status-callback{background:var(--amber-weak);color:var(--amber)}
-  .badge.status-rejected{background:var(--red-weak);color:var(--red)}
-  .badge.status-committed{background:var(--green-weak);color:var(--green)}
-  .badge.flag-bad{background:var(--red-weak);color:var(--red)}
-  .badge.flag-warn{background:var(--amber-weak);color:var(--amber)}
-  .badge.flag-info{background:#eef2f7;color:var(--muted)}
-  .badge.lang{background:#eef2f7;color:var(--muted);font-family:var(--mono)}
+  .badge{display:inline-flex;align-items:center;font-size:10.5px;font-weight:700;padding:4px 10px;
+         border-radius:999px;line-height:1.4;white-space:nowrap;font-family:var(--display-font)}
+  .badge.status-new{background:var(--info-weak);color:var(--secondary)}
+  .badge.status-in_review{background:var(--warning-weak);color:var(--error)}
+  .badge.status-callback{background:var(--warning-weak);color:var(--error)}
+  .badge.status-rejected{background:var(--danger-weak);color:var(--error)}
+  .badge.status-committed{background:var(--positive-weak);color:var(--primary)}
+  .badge.flag-bad{background:var(--danger-weak);color:var(--error)}
+  .badge.flag-warn{background:var(--warning-weak);color:var(--error)}
+  .badge.flag-info{background:var(--surface-variant);color:var(--muted)}
+  .badge.lang{background:var(--surface-variant);color:var(--muted);font-family:var(--mono);font-weight:600}
 
   .detail-pane{overflow-y:auto;padding:20px 26px 60px}
   .hint{color:var(--muted);font-size:13px;padding:40px;text-align:center}
-  .dcard{background:var(--panel);border:1px solid var(--border);border-radius:10px;
-         padding:16px 18px;margin-bottom:16px}
-  .dcard h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);
-            margin:0 0 10px}
+  .dcard{background:var(--surface);border:2px solid var(--primary);border-radius:20px;
+         padding:18px 20px;margin-bottom:16px}
+  .dcard h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+            margin:0 0 10px;font-weight:800;font-family:var(--display-font)}
   .dhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
-  .dhead .cust{font-size:17px;font-weight:700}
+  .dhead .cust{font-size:18px;font-weight:800;font-family:var(--display-font)}
   .dhead .sub{font-size:12.5px;color:var(--muted);margin-top:2px}
   .flagrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
-  .claim-banner{margin-top:10px;font-size:12.5px;padding:8px 10px;border-radius:6px;
-                background:var(--amber-weak);color:var(--amber)}
+  .claim-banner{margin-top:10px;font-size:12.5px;padding:8px 12px;border-radius:999px;
+                background:var(--warning-weak);color:var(--error);font-weight:600}
 
-  .transcript{font-size:14px;line-height:1.6;white-space:pre-wrap;background:#fafbfc;
-              border:1px solid var(--border);border-radius:8px;padding:12px}
+  .transcript{font-size:14px;line-height:1.6;white-space:pre-wrap;background:var(--surface-variant);
+              border-radius:12px;padding:12px;color:var(--text)}
   audio{width:100%;margin-top:10px}
   .segments{margin-top:10px;max-height:160px;overflow-y:auto;font-size:12.5px}
-  .seg{display:flex;gap:8px;padding:4px 6px;border-radius:5px;cursor:pointer}
+  .seg{display:flex;gap:8px;padding:4px 6px;border-radius:8px;cursor:pointer}
   .seg:hover{background:var(--row-hover)}
   .seg .t{font-family:var(--mono);color:var(--muted);flex:0 0 auto}
 
   table.lines{width:100%;border-collapse:collapse;font-size:13px}
   table.lines th{text-align:left;font-size:11px;text-transform:uppercase;color:var(--muted);
-                 padding:4px 6px;border-bottom:1px solid var(--border)}
-  table.lines td{padding:6px;vertical-align:top;border-bottom:1px solid var(--border)}
+                 padding:4px 6px;border-bottom:1px solid var(--outline);font-weight:700}
+  table.lines td{padding:6px;vertical-align:top;border-bottom:1px solid var(--outline)}
   table.lines tr.removed{opacity:.4}
   table.lines .raw{color:var(--muted);font-size:11.5px;margin-top:2px}
   table.lines input[type=text],table.lines input[type=number],table.lines select{
-     width:100%;border:1px solid var(--border);border-radius:5px;padding:4px 6px;font-size:12.5px}
+     width:100%;border:1px solid var(--outline);border-radius:8px;padding:4px 6px;font-size:12.5px;
+     background:var(--surface);color:var(--text)}
   table.lines input.qty{width:70px}
   .conf{font-size:11px;color:var(--muted);font-family:var(--mono)}
   .add-line{margin-top:8px}
 
   .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px}
-  button{cursor:pointer;font-size:13px;border-radius:7px;border:1px solid var(--border);
-         background:var(--panel);padding:7px 14px;font-weight:600;color:var(--text)}
-  button:hover{border-color:#c7cdd6}
+  button{cursor:pointer;font-size:13px;border-radius:999px;border:1px solid var(--outline);
+         background:var(--surface);padding:9px 22px;font-weight:700;color:var(--text);
+         font-family:var(--display-font)}
+  button:hover{border-color:var(--primary)}
   button:disabled{opacity:.45;cursor:not-allowed}
-  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-  button.primary:hover{background:#1d4ed8}
-  button.danger{color:var(--red)}
-  button.ghost{border-color:transparent;background:transparent;color:var(--muted);padding:4px 8px}
+  button.primary{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+  button.primary:hover{background:var(--secondary);border-color:var(--secondary)}
+  button.danger{color:var(--error);border-color:var(--error)}
+  button.ghost{border-color:transparent;background:transparent;color:var(--muted);padding:4px 10px}
   input.otype{width:80px;text-transform:uppercase}
-  textarea.note{width:100%;min-height:50px;border:1px solid var(--border);border-radius:6px;
-         padding:6px 8px;font-size:12.5px;font-family:inherit;resize:vertical}
+  textarea.note{width:100%;min-height:50px;border:1px solid var(--outline);border-radius:12px;
+         padding:8px 10px;font-size:12.5px;font-family:inherit;resize:vertical;
+         background:var(--surface);color:var(--text)}
 
   .toast-wrap{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:8px;z-index:50}
-  .toast{padding:10px 14px;border-radius:8px;font-size:13px;color:#fff;box-shadow:0 4px 12px rgba(0,0,0,.15)}
-  .toast.ok{background:var(--green)}
-  .toast.err{background:var(--red)}
+  .toast{padding:10px 16px;border-radius:999px;font-size:13px;color:#fff;box-shadow:0 4px 12px rgba(0,0,0,.15);
+         font-weight:600}
+  .toast.ok{background:var(--primary)}
+  .toast.err{background:var(--error)}
 
   .tabs{display:flex;gap:4px}
-  .tab-btn{border:none;background:transparent;font-size:13px;font-weight:600;color:var(--muted);
-           padding:6px 10px;border-radius:6px;cursor:pointer}
+  .tab-btn{border:none;background:transparent;font-size:13px;font-weight:700;color:var(--muted);
+           padding:7px 14px;border-radius:999px;cursor:pointer;font-family:var(--display-font)}
   .tab-btn:hover{background:var(--row-hover)}
-  .tab-btn.active{background:var(--accent-weak);color:var(--accent)}
+  .tab-btn.active{background:var(--positive-weak);color:var(--primary)}
   .activity-layout{display:block;overflow-y:auto;padding:10px}
-  .badge.level-info{background:#eef2f7;color:var(--muted)}
-  .badge.level-warn{background:var(--amber-weak);color:var(--amber)}
-  .badge.level-error{background:var(--red-weak);color:var(--red)}
+  .badge.level-info{background:var(--surface-variant);color:var(--muted)}
+  .badge.level-warn{background:var(--warning-weak);color:var(--error)}
+  .badge.level-error{background:var(--danger-weak);color:var(--error)}
   #activityTable td{font-size:12.5px}
 
 </style>
@@ -121,7 +149,7 @@
 <body>
 
 <header>
-  <h1>🗣️ Voice Order Review</h1>
+  <h1><span class="brand">Ve</span>Voice Order Review</h1>
   <div class="conn-dot" id="connDot" title="API connection"></div>
   <div class="tabs">
     <button class="tab-btn active" id="queueTabBtn">Queue</button>
@@ -130,6 +158,9 @@
   <div class="spacer"></div>
   <label for="opInput">Operator</label>
   <input id="opInput" type="text" placeholder="your name">
+  <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
+    <span class="thumb" id="themeThumb">☀</span>
+  </button>
 </header>
 
 <div class="layout" id="queueView">
@@ -231,6 +262,18 @@ function opName(){ return localStorage.getItem("vo_operator") || ""; }
 document.getElementById("opInput").value = opName();
 document.getElementById("opInput").addEventListener("input", e=>{
   localStorage.setItem("vo_operator", e.target.value);
+});
+
+// Explicit light/dark only, same as the Android app's theme toggle - no
+// "follow system" third option.
+function applyTheme(mode){
+  document.documentElement.setAttribute("data-theme", mode);
+  document.getElementById("themeThumb").textContent = mode === "dark" ? "☽" : "☀";
+  localStorage.setItem("vo_theme", mode);
+}
+applyTheme(localStorage.getItem("vo_theme") || "light");
+document.getElementById("themeToggle").addEventListener("click", ()=>{
+  applyTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark");
 });
 
 function toast(msg, kind){
@@ -367,7 +410,7 @@ function renderDetail(){
         <span class="badge status-${d.status}">${d.status}</span>
       </div>
       <div class="flagrow">
-        <span class="badge status-new" style="background:#eef2f7;color:var(--text)">${d.intents.join(", ")}</span>
+        <span class="badge status-new" style="background:var(--surface-variant);color:var(--text)">${d.intents.join(", ")}</span>
         ${flagsHtml}
       </div>
       ${otherClaim ? `<div class="claim-banner">Claimed by ${d.assigned_to}</div>` : ""}
@@ -395,7 +438,7 @@ function renderDetail(){
         No lines extracted${d.language==='ar'||d.languages&&d.languages.includes('ar')?' — common with Arabic speech, add lines manually below':''}.
       </div>
       <div class="actions add-line">
-        <button class="ghost" id="addLineBtn" style="border:1px dashed var(--border)" ${decided?"disabled":""}>+ Add line</button>
+        <button class="ghost" id="addLineBtn" style="border:1px dashed var(--outline)" ${decided?"disabled":""}>+ Add line</button>
         <label style="font-size:12px;color:var(--muted)">Order type
           <input type="text" class="otype" id="orderType"
             value="${d.primary_intent==='return_order'?'RETURN':'SO'}"></label>
