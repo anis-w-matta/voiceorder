@@ -8,9 +8,10 @@ tests stub.
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
 from app.errors import RequestNotFound, RequestNotReviewable
-from app.models import PendingLine, PendingRequest, VoiceMessage
+from app.models import ActivityLog, PendingLine, PendingRequest, VoiceMessage
 from app.schemas.enums import RequestStatus
 from app.services import catalog_client
 from app.services.catalog_client import CommitTransientError
@@ -247,3 +248,88 @@ class TestReconciliation:
         assert req is not None
         assert req.status == RequestStatus.committed.value
         assert req.committed_order_nb == result.order_nb
+
+    def test_definitive_failure_during_reconciliation_reverts_line_edits(
+            self, db_session, pending_request, monkeypatch):
+        """The crash-recovery retry path must undo _apply_edits() on a
+        definitive failure the same way the live path's own definitive-
+        failure branch does (see TestCommitFailureHandling's
+        test_definitive_failure_also_reverts_line_edits) - otherwise a
+        request that gets stuck, retried, and definitively rejected on
+        retry keeps an edit that was never actually committed."""
+        monkeypatch.setattr(
+            catalog_client, "create_order",
+            lambda **kwargs: (_ for _ in ()).throw(
+                CommitTransientError("catalog-service unreachable")))
+        edit = catalog_client.LineEditIn(line_nb=1, item_nb="9999",
+                                         item_desc="Swapped", qty=Decimal("99"))
+        svc = OrderCommitService(db_session)
+        with pytest.raises(CommitTransientError):
+            svc.commit(pending_request.id, "SO", line_edits=[edit],
+                      operator="sm1")
+        db_session.expire_all()
+        req = db_session.get(PendingRequest, pending_request.id)
+        assert req.status == RequestStatus.committing.value
+        assert req.lines[0].item_nb == "9999", (
+            "edit should already be applied locally, same as the live path")
+
+        from app.errors import CustomerNotFound
+
+        def raise_definitive(**kwargs):
+            raise CustomerNotFound("58466")
+
+        monkeypatch.setattr(catalog_client, "create_order", raise_definitive)
+
+        resolved = reconcile_stuck_commit(db_session, pending_request.id)
+
+        assert resolved is True
+        db_session.expire_all()
+        req = db_session.get(PendingRequest, pending_request.id)
+        assert req.status == RequestStatus.new.value
+        assert req.commit_intent_id is None
+        assert len(req.lines) == 1
+        assert req.lines[0].item_nb == "1001", (
+            "a line edit staged for a commit that was never confirmed must "
+            "not survive a definitive failure discovered on retry")
+        assert req.lines[0].qty == Decimal("2")
+
+    def test_live_commit_does_not_re_finalize_after_reconciliation_wins(
+            self, db_session, pending_request, monkeypatch):
+        """The row lock is released before commit()'s own outbound
+        create_order() call (see that method's comment), so a slow call can
+        race app/worker.py's reconciliation sweep: the sweep can resend the
+        same commit_intent_id and finalize the request first (idempotent on
+        catalog-service's side) before the live call's own response comes
+        back. _finalize_committed() itself isn't idempotent - it
+        unconditionally logs "order_committed" - so it must not run a
+        second time once the sweep has already finalized this request."""
+        result = _fake_create_order_result()
+
+        def create_order_that_lets_reconciliation_win_first(**kwargs):
+            # Simulates the sweep beating this call to the finalize step:
+            # by the time this (the live call's own) create_order()
+            # returns, the request has already been committed elsewhere.
+            monkeypatch.setattr(catalog_client, "create_order",
+                                lambda **kw: result)
+            assert reconcile_stuck_commit(db_session, pending_request.id) is True
+            return result
+
+        monkeypatch.setattr(catalog_client, "create_order",
+                            create_order_that_lets_reconciliation_win_first)
+
+        svc = OrderCommitService(db_session)
+        out = svc.commit(pending_request.id, "SO", line_edits=[],
+                         operator="sm1")
+
+        assert out is result
+        db_session.expire_all()
+        req = db_session.get(PendingRequest, pending_request.id)
+        assert req.status == RequestStatus.committed.value
+        entries = db_session.scalars(
+            select(ActivityLog).where(
+                ActivityLog.event_type == "order_committed",
+                ActivityLog.request_id == pending_request.id)
+        ).all()
+        assert len(entries) == 1, (
+            "reconciliation finalizing first, then the live call's own "
+            "response arriving, must not double-log order_committed")

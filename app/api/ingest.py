@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_audio, get_db, get_operator
-from app.models import PendingRequest, VoiceMessage
+from app.api.deps import get_audio, get_current_salesman, get_db, get_operator
+from app.models import PendingRequest, Salesman, VoiceMessage
 from app.services.activity_log import log as log_activity
 from app.services.audio_formats import AUDIO_MIME_BY_EXT
+from app.services.authorization import require_customer_ownership
 from app.services.gemini_transcriber import GeminiTranscriber
 
 router = APIRouter(tags=["ingest"])
@@ -102,17 +103,20 @@ def transcribe_preview(audio: UploadFile = File(...),
 
 
 @router.get("/ingest/voice/{voice_id}")
-def voice_status(voice_id: int, s: Session = Depends(get_db)):
+def voice_status(voice_id: int, s: Session = Depends(get_db),
+                 salesman: Salesman = Depends(get_current_salesman)):
     """Lightweight polling target for a client that just uploaded audio and
     wants to know when the worker (app/worker.py) has picked it up and
     finished processing - status moves received -> transcribing ->
-    transcribed -> classified -> drafted (or failed/too_long)."""
+    transcribed -> classified -> drafted (or failed/too_long). Requires a
+    logged-in salesman like every other endpoint."""
     vm = s.get(VoiceMessage, voice_id)
     if not vm:
         raise HTTPException(404)
     req = s.scalars(select(PendingRequest)
                     .where(PendingRequest.voice_message_id == voice_id)
                     ).first()
+    require_customer_ownership(req.cust_nb if req else None, salesman)
     return {"id": vm.id, "status": vm.status, "error": vm.error,
            "transcript": vm.transcript, "language": vm.language,
            "request_id": req.id if req else None}

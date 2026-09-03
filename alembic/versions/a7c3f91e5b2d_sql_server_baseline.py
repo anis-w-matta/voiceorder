@@ -114,10 +114,18 @@ def upgrade() -> None:
         sa.Column("committed_order_nb", sa.String(30)),
         # The commit saga's idempotency key - see
         # app/services/commit.py's OrderCommitService.commit() and
-        # app/worker.py's reconcile_stuck_commits().
-        sa.Column("commit_intent_id", sa.String(36), unique=True,
-                  index=True),
+        # app/worker.py's reconcile_stuck_commits(). Uniqueness is enforced
+        # by a filtered index below, not unique=True here: a plain unique
+        # constraint on this nullable column would let SQL Server accept
+        # only one NULL row total (unlike Postgres), and almost every
+        # pending request has commit_intent_id=None until it starts
+        # committing.
+        sa.Column("commit_intent_id", sa.String(36)),
     )
+    op.create_index(
+        "ix_pending_request_commit_intent_id", "pending_request",
+        ["commit_intent_id"], unique=True,
+        mssql_where=sa.text("commit_intent_id IS NOT NULL"))
 
     op.create_table(
         "pending_request_line",

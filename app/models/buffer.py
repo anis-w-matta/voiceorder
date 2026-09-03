@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (JSON, BigInteger, Boolean, DateTime, Float,
-                        ForeignKey, Numeric, String, Text, text)
+                        ForeignKey, Index, Numeric, String, Text, text)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -10,6 +10,17 @@ from app.models.base import Base
 
 class PendingRequest(Base):
     __tablename__ = "pending_request"
+    __table_args__ = (
+        # A plain unique=True on this nullable column would let SQL Server
+        # accept only one NULL row total across the whole table (unlike
+        # Postgres, which allows many) - almost every pending request has
+        # commit_intent_id=None until it starts committing, so the second
+        # one ever inserted would hard-fail. Filtered so the uniqueness
+        # constraint only ever applies to the (non-null) idempotency keys
+        # it's actually meant to protect.
+        Index("ix_pending_request_commit_intent_id", "commit_intent_id",
+              unique=True, mssql_where=text("commit_intent_id IS NOT NULL")),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True,
                                     autoincrement=True)
@@ -38,8 +49,7 @@ class PendingRequest(Base):
     # crash mid-call leaves a recoverable trace: app/worker.py's
     # reconcile_stuck_commits() re-sends this same id and gets the same
     # order back rather than creating a duplicate.
-    commit_intent_id: Mapped[str | None] = mapped_column(
-        String(36), unique=True, index=True)
+    commit_intent_id: Mapped[str | None] = mapped_column(String(36))
 
     lines: Mapped[list["PendingLine"]] = relationship(
         back_populates="request", cascade="all, delete-orphan",

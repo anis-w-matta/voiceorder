@@ -61,6 +61,24 @@ def _snapshot_lines(req) -> dict:
            for l in req.lines}
 
 
+def _serialize_line_snapshot(snapshot: dict) -> dict:
+    """JSON-safe form of a _snapshot_lines() result, so it can survive in
+    PendingRequest.raw_model_output.commit_request (see commit() below) and
+    let reconcile_stuck_commit() restore it after a crash, the same way
+    commit()'s own in-memory `original_lines` restores it on a live
+    definitive failure. Only qty (Decimal) isn't already JSON-safe."""
+    return {str(nb): {**fields,
+                      "qty": str(fields["qty"]) if fields["qty"] is not None else None}
+           for nb, fields in snapshot.items()}
+
+
+def _deserialize_line_snapshot(data: dict) -> dict:
+    from decimal import Decimal
+    return {int(nb): {**fields,
+                      "qty": Decimal(fields["qty"]) if fields["qty"] is not None else None}
+           for nb, fields in data.items()}
+
+
 def _restore_lines(req, snapshot: dict) -> None:
     """Undoes _apply_edits()'s mutation of req.lines. Without this, a
     definitive catalog-service failure (e.g. CustomerNotAuthorized, raised
@@ -167,6 +185,7 @@ class OrderCommitService:
                 "lines": [_line_dict(l) for l in lines_snapshot],
                 "line_edits": [_line_edit_dict(e) for e in line_edits_snapshot],
                 "removed_line_nbs": removed_snapshot,
+                "original_lines": _serialize_line_snapshot(original_lines),
             },
         }
         # Doubles as "when did committing start", so the worker's
@@ -211,6 +230,16 @@ class OrderCommitService:
         req = self.s.execute(
             select(PendingRequest).where(PendingRequest.id == request_id)
             .with_for_update()).scalar_one()
+        if req.status == RequestStatus.committed.value:
+            # The row lock was released above for the outbound call, so a
+            # slow create_order() can race app/worker.py's reconciliation
+            # sweep: it can see this request stuck in "committing", resend
+            # the same commit_intent_id, and finalize it first (idempotent
+            # on catalog-service's side - see reconcile_stuck_commit's own
+            # docstring). _finalize_committed() itself isn't idempotent
+            # (it unconditionally logs "order_committed"), so it must not
+            # run a second time once someone else has already finalized.
+            return result
         _finalize_committed(self.s, req, result, operator, order_type)
         return result
 
@@ -343,6 +372,7 @@ def reconcile_stuck_commit(session, req_id: int) -> bool:
         req.status = RequestStatus.new.value
         req.commit_intent_id = None
         req.decided_at = None
+        _restore_lines(req, _deserialize_line_snapshot(payload["original_lines"]))
         session.commit()
         return True
 

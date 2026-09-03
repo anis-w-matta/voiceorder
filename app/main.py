@@ -46,11 +46,11 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/console")
+@app.get("/console", dependencies=_guard)
 def console():
     return FileResponse(STATIC_DIR / "console.html")
 
 
-@app.get("/record")
+@app.get("/record", dependencies=_guard)
 def record():
     return FileResponse(STATIC_DIR / "record.html")
