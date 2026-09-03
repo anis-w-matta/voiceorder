@@ -15,12 +15,10 @@ queries will under-report completeness for a while; every response below
 carries an explicit completeness count rather than pretending the
 available rows are the whole population.
 """
-import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import DateTime, Integer, cast, func, select
-from sqlalchemy.dialects.mssql import DATE as MSSQL_DATE
+from sqlalchemy import Integer, func, select
 from sqlalchemy.orm import Session
 
 from app.models import PendingLine, PendingRequest
@@ -29,35 +27,6 @@ from app.schemas.enums import RequestStatus
 OPEN_STATUSES = (RequestStatus.new.value, RequestStatus.in_review.value,
                 RequestStatus.callback.value)
 DECIDED_STATUSES = (RequestStatus.rejected.value, RequestStatus.committed.value)
-
-
-def _utc_day(col):
-    """Truncates a DateTime(timezone=True) column to its UTC day boundary,
-    as a DateTime (midnight) - not Postgres' date_trunc('day', timezone(
-    'UTC', col)) (no SQL Server equivalent), but an equivalent result:
-    every timestamp this app writes is already UTC (SYSUTCDATETIME/
-    GETUTCDATE/datetime.now(timezone.utc) - see app/worker.py and
-    app/models/), so a plain CAST to DATE and back needs no separate
-    timezone conversion step first. Returns DateTime, not just DATE, so
-    callers keep getting a real datetime back (matching VolumePoint.day/
-    ActivityVolumePoint.day's existing type), not a bare date."""
-    return cast(cast(col, MSSQL_DATE), DateTime)
-
-
-def _percentile(sorted_vals: list[float], p: float) -> float:
-    """Linear-interpolation percentile, matching Postgres' percentile_cont
-    semantics (continuous, linearly interpolated). SQL Server's own
-    PERCENTILE_CONT is a window function that requires an OVER() clause,
-    which doesn't combine with the plain COUNT()/AVG() this module also
-    needs in the same ungrouped query - computed in Python instead.
-    `sorted_vals` must already be sorted ascending and non-empty."""
-    if len(sorted_vals) == 1:
-        return sorted_vals[0]
-    rank = p * (len(sorted_vals) - 1)
-    lo, hi = math.floor(rank), math.ceil(rank)
-    if lo == hi:
-        return sorted_vals[lo]
-    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (rank - lo)
 
 
 @dataclass
@@ -173,29 +142,30 @@ def turnaround_summary(session: Session, f: RequestsFilter) -> TurnaroundSummary
     "decided" set - callback is not final). For a committed request,
     decided_at is set when the commit attempt *started*, not when it
     finished - a documented, deliberate ambiguity (see Phase 2 plan), not
-    fixed here.
-
-    Percentiles/avg computed in Python (see _percentile) rather than SQL -
-    no live-row-count concern here, this is at most one row pair per
-    request in the filtered set."""
+    fixed here."""
+    seconds = func.extract(
+        "epoch", PendingRequest.decided_at - PendingRequest.created_at)
     q = _apply_filters(
-        select(PendingRequest.created_at, PendingRequest.decided_at), f)
+        select(
+            func.count(),
+            func.percentile_cont(0.5).within_group(seconds),
+            func.avg(seconds),
+            func.percentile_cont(0.75).within_group(seconds),
+            func.percentile_cont(0.9).within_group(seconds),
+            func.percentile_cont(0.95).within_group(seconds),
+        ).select_from(PendingRequest), f)
     q = q.where(PendingRequest.status.in_(DECIDED_STATUSES),
                PendingRequest.decided_at.is_not(None))
-    rows = session.execute(q).all()
-    n = len(rows)
+    row = session.execute(q).one()
+    n = row[0] or 0
     if n == 0:
         return TurnaroundSummary(sample_size=0, median_seconds=None,
                                  avg_seconds=None, p75_seconds=None,
                                  p90_seconds=None, p95_seconds=None)
-    seconds = sorted((decided - created).total_seconds()
-                     for created, decided in rows)
     return TurnaroundSummary(
-        sample_size=n, median_seconds=_percentile(seconds, 0.5),
-        avg_seconds=sum(seconds) / n,
-        p75_seconds=_percentile(seconds, 0.75),
-        p90_seconds=_percentile(seconds, 0.9),
-        p95_seconds=_percentile(seconds, 0.95))
+        sample_size=n, median_seconds=float(row[1]), avg_seconds=float(row[2]),
+        p75_seconds=float(row[3]), p90_seconds=float(row[4]),
+        p95_seconds=float(row[5]))
 
 
 @dataclass
@@ -239,8 +209,12 @@ class VolumePoint:
 
 
 def volume_over_time(session: Session, f: RequestsFilter) -> list[VolumePoint]:
-    """Day boundaries in UTC - see _utc_day."""
-    day = _utc_day(PendingRequest.created_at)
+    """Day boundaries in UTC, explicitly - same reasoning as
+    activity_by_hour/activity_volume_over_time's timezone notes below;
+    date_trunc('day', a timestamptz) would otherwise shift day boundaries
+    by this deployment's Postgres session offset (Europe/Chisinau) instead
+    of UTC midnight."""
+    day = func.date_trunc("day", func.timezone("UTC", PendingRequest.created_at))
     q = _apply_filters(
         select(day, PendingRequest.status, func.count())
         .group_by(day, PendingRequest.status)
@@ -428,11 +402,15 @@ class QualityTrendPoint:
 def ai_quality_trend(session: Session, f: RequestsFilter) -> list[QualityTrendPoint]:
     """Monthly correction-rate trend, bucketed by the request's created_at
     (when it entered the queue - a line's own "when was it AI-classified"
-    moment, not a business/order date). Month boundaries computed in UTC -
-    every timestamp this app writes is already UTC (see _utc_day), so
-    FORMAT needs no separate timezone-conversion step first, unlike
-    Postgres' date_trunc('month', timezone('UTC', ...)) this replaces."""
-    month = func.format(PendingRequest.created_at, "yyyy-MM")
+    moment, not a business/order date). Month boundaries computed in UTC,
+    explicitly - same reasoning as volume_over_time's timezone note above;
+    date_trunc('month', a timestamptz) would otherwise shift month
+    boundaries (only visible near a month's start/end) by this
+    deployment's Postgres session offset (Europe/Chisinau) instead of
+    UTC."""
+    month = func.to_char(
+        func.date_trunc("month", func.timezone("UTC", PendingRequest.created_at)),
+        "YYYY-MM")
     q = (
         select(month, func.count(),
               func.sum(func.cast(PendingLine.operator_edited, Integer)))
@@ -490,17 +468,16 @@ class HourCount:
 
 
 def activity_by_hour(session: Session, f: ActivityFilter) -> list[HourCount]:
-    """Hour-of-day in UTC, explicitly. Every timestamp this app writes is
-    already UTC (see _utc_day), so no separate timezone-conversion step is
-    needed before extracting the hour - unlike Postgres, where
-    EXTRACT(HOUR FROM a timestamptz) silently converts to the DB session's
-    timezone first (this deployment's Postgres session defaulted to
-    Europe/Chisinau, not UTC). Not business-local time (BUSINESS_TIMEZONE
-    is Asia/Beirut) - a documented, deliberate choice: this is an
-    operational "when do events happen" view, not a business-hours
-    calculation, and UTC is unambiguous across deployments."""
+    """Hour-of-day in UTC, explicitly - EXTRACT(HOUR FROM a timestamptz)
+    otherwise silently converts to the DB session's timezone first (this
+    deployment's Postgres session defaults to Europe/Chisinau, not UTC),
+    which would make "hour 9" mean a different real hour depending on
+    server/session config. Not business-local time (BUSINESS_TIMEZONE is
+    Asia/Beirut) - a documented, deliberate choice: this is an operational
+    "when do events happen" view, not a business-hours calculation, and
+    UTC is unambiguous across deployments."""
     from app.models import ActivityLog
-    hour = func.extract("hour", ActivityLog.ts)
+    hour = func.extract("hour", func.timezone("UTC", ActivityLog.ts))
     q = _activity_query(f).with_only_columns(hour, func.count()).group_by(hour).order_by(hour)
     rows = session.execute(q).all()
     counts = {h: 0 for h in range(24)}
@@ -531,9 +508,12 @@ class ActivityVolumePoint:
 
 
 def activity_volume_over_time(session: Session, f: ActivityFilter) -> list[ActivityVolumePoint]:
-    """Day boundaries in UTC - see _utc_day."""
+    """Day boundaries in UTC, explicitly - same reasoning as
+    activity_by_hour's timezone note above; date_trunc('day', a
+    timestamptz) would otherwise shift day boundaries by this deployment's
+    Postgres session offset (Europe/Chisinau) instead of UTC midnight."""
     from app.models import ActivityLog
-    day = _utc_day(ActivityLog.ts)
+    day = func.date_trunc("day", func.timezone("UTC", ActivityLog.ts))
     q = (_activity_query(f)
         .with_only_columns(day, func.count())
         .group_by(day).order_by(day))

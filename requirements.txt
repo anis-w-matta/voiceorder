@@ -4,7 +4,7 @@ python-multipart==0.0.20
 pydantic==2.12.5
 pydantic-settings==2.7.0
 sqlalchemy==2.0.36
-pyodbc==5.2.0
+psycopg[binary]==3.2.3
 alembic==1.14.0
 av==18.0.0
 numpy==2.5.2

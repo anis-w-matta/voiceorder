@@ -35,22 +35,22 @@ class Worker:
             UPDATE voice_message
             SET status = 'failed', error = 'worker timeout'
             WHERE status = 'transcribing'
-              AND claimed_at < DATEADD(MINUTE, -:mins, GETUTCDATE())
+              AND claimed_at < now() - (:mins || ' minutes')::interval
         """), {"mins": settings.worker_stale_minutes})
 
     def claim_one(self):
         with session_scope() as s:
             self.recover_stale(s)
             vid = s.execute(text("""
-                SELECT TOP 1 id FROM voice_message WITH (UPDLOCK, ROWLOCK, READPAST)
+                SELECT id FROM voice_message
                 WHERE status IN ('received','failed') AND attempts < :max
                 ORDER BY received_at
+                FOR UPDATE SKIP LOCKED LIMIT 1
             """), {"max": settings.worker_max_attempts}).scalar()
             if vid is None:
                 return None
             s.execute(update(VoiceMessage).where(VoiceMessage.id == vid)
-                      .values(status="transcribing",
-                              claimed_at=text("GETUTCDATE()"),
+                      .values(status="transcribing", claimed_at=text("now()"),
                               attempts=VoiceMessage.attempts + 1))
             return vid
 
@@ -69,16 +69,17 @@ class Worker:
         app.services.commit.reconcile_stuck_commit). The staleness gate
         exists so this never races a request that's still genuinely
         inside its own synchronous accept() call, only ones that crashed
-        or are taking unreasonably long. WITH (UPDLOCK, ROWLOCK, READPAST),
-        same claim pattern as claim_one() above, so this is safe to run
+        or are taking unreasonably long. FOR UPDATE SKIP LOCKED, same
+        claim pattern as claim_one() above, so this is safe to run
         alongside another worker process.
         """
         with session_scope() as s:
             req_id = s.execute(text("""
-                SELECT TOP 1 id FROM pending_request WITH (UPDLOCK, ROWLOCK, READPAST)
+                SELECT id FROM pending_request
                 WHERE status = 'committing'
-                  AND decided_at < DATEADD(SECOND, -:secs, GETUTCDATE())
+                  AND decided_at < now() - (:secs || ' seconds')::interval
                 ORDER BY decided_at
+                FOR UPDATE SKIP LOCKED LIMIT 1
             """), {"secs": settings.commit_reconcile_stale_seconds}).scalar()
             if req_id is None:
                 return
